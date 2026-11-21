@@ -256,13 +256,14 @@ def _script_prompt(items: List[Dict], seconds: int, tone: str, guide: str, notes
 {(post_body or '(없음)')[:3000]}
 
 [구성]
-- 장면 {n_scenes}개 안팎(최대 {MAX_SCENES}개). 장면 하나 = 소재 하나. 한 장면은 약 3~4초(영상 소재는 최대 6초).
-- 소재는 될 수 있으면 모두 한 번씩 쓰고, 같은 소재를 두 번 쓰지 마세요. 순서는 이야기 흐름에 맞게 정해도 됩니다.
-- 첫 장면은 1~2초 안에 시선을 붙잡는 한마디(궁금증·공감 질문·핵심 장점). 마지막 장면은 "자세한 후기는 블로그에서 확인해 보세요"처럼 자연스러운 마무리.
+- 전체 길이 약 {seconds}초. 장면 {n_scenes}개 안팎(최대 {MAX_SCENES}개), 한 장면은 약 4초. 장면 하나 = 소재 하나.
+- 소재는 모두 한 번씩 쓰세요. 소재가 장면 수보다 적으면 같은 소재를 다른 장면에 한 번 더 써도 됩니다(연달아 같은 소재는 금지). 순서는 이야기 흐름에 맞게.
+- 첫 장면 나레이션은 꼭 존댓말 인사로 시작: "안녕하세요! 오늘 소개해 드릴 제품은 ○○예요."처럼 (제품이 아니면 "오늘 소개해 드릴 곳은" 등 소재에 맞게). 그 장면 자막은 제품·장소 이름이 들어간 짧은 소개.
+- 마지막 장면 나레이션은 꼭 "자세한 내용은 블로그와 클립 설명에 있는 링크를 꼭 참고해 주세요."와 같은 뜻으로 마무리 (말은 자연스럽게 바꿔도 됨). 그 장면 자막도 "자세한 건 ==링크==에서"처럼 링크 안내.
 
 [말투 — 한국어 원어민 수준]
 - 나레이션: {tone_ko}. 실제 한국인이 말하듯 짧게 끊어 말하고, 번역투("~하는 것은", "~에 대해", "~를 통해", "그것은") 금지.
-- 나레이션은 장면당 1~2문장, 공백 포함 18~32자 정도(소리 내 읽어 3~4초). 숫자·가격은 소리 내 읽기 쉬운 한글로 (예: 12,000원 → 만 이천 원).
+- 나레이션은 장면당 1~2문장, 공백 포함 18~26자 정도(소리 내 읽어 약 3.5초). 나레이션을 모두 합쳐 공백 포함 {int(seconds * 4.2)}~{int(seconds * 4.8)}자를 넘지 마세요. 숫자·가격은 소리 내 읽기 쉬운 한글로 (예: 12,000원 → 만 이천 원).
 - 자막: 나레이션을 더 짧게 줄인 핵심 문장. 1~2줄, 줄당 공백 포함 13자 이내. 장면마다 가장 중요한 단어 하나를 ==단어== 로 감싸 강조. 숫자·용량·가격은 자막에서는 아라비아 숫자 그대로 (예: 1+1, 150ml, 12,000원 — 한글로 풀어 쓰는 건 나레이션만). 이모지 금지.
 - 상단 제목: 2줄, 줄당 공백 포함 11자 이내. 검색 키워드(업체·지역·제품)가 들어가게, 핵심 단어 하나 ==강조==.
 
@@ -300,7 +301,7 @@ def make_script(api_key: str, items: List[Dict], seconds: int = 30, tone: str = 
         if b64:
             images.append(("image/jpeg", b64))
     seconds = seconds if seconds in SECONDS_CHOICES else 30
-    n_scenes = max(3, min(MAX_SCENES, len(items), round(seconds / 3.5)))
+    n_scenes = max(3, min(MAX_SCENES, round(seconds / 5)))
     valid = {it["key"] for it in items}
 
     def accept(text: str):
@@ -314,7 +315,14 @@ def make_script(api_key: str, items: List[Dict], seconds: int = 30, tone: str = 
         WRITER_MODELS, generation_config={"temperature": 0.8, "maxOutputTokens": 4000}, timeout=60,
         accept=accept, images=images[:16])
     logger.info(f"🎬 클립 대본 생성 ({model})")
-    return clean_script(data, items)
+    script = clean_script(data, items)
+    sc = script["scenes"]
+    if sc and sc[0]["narration"] and not sc[0]["narration"].startswith("안녕하세요"):
+        first = re.sub(r"^안녕[!~.,\s]*", "", sc[0]["narration"])       # 반말 인사(안녕!)는 존댓말로
+        sc[0]["narration"] = ("안녕하세요! " + first)[:120]
+    if len(sc) > 1 and not ("링크" in sc[-1]["narration"] and "블로그" in sc[-1]["narration"]):
+        sc[-1]["narration"] = "자세한 내용은 블로그와 클립 설명에 있는 링크를 꼭 참고해 주세요."
+    return script
 
 
 def _media_key(v) -> str:
@@ -549,29 +557,29 @@ _ENC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv
         "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2", "-video_track_timescale", "15360"]
 
 
-def _scene_audio_args(nar: Optional[Path], dur: float, idx_in: int) -> Tuple[List[str], str]:
+def _scene_audio_args(nar: Optional[Path], dur: float, idx_in: int, lead: float = 0.0) -> Tuple[List[str], str]:
+    delay = f"adelay={int(lead * 1000)}:all=1," if lead > 0 else ""
     if nar:
         return (["-i", str(nar)],
-                f"[{idx_in}:a]aformat=sample_rates=44100:channel_layouts=stereo,apad,atrim=0:{dur:.3f},"
+                f"[{idx_in}:a]aformat=sample_rates=44100:channel_layouts=stereo,atempo={TEMPO},{delay}apad,atrim=0:{dur:.3f},"
                 f"afade=t=out:st={max(dur - 0.08, 0):.3f}:d=0.08[a]")
     return (["-f", "lavfi", "-t", f"{dur:.3f}", "-i", "anullsrc=r=44100:cl=stereo"], f"[{idx_in}:a]anull[a]")
 
 
-def render_photo_scene(ff: str, item: Dict, ovl: Path, nar: Optional[Path], dur: float, out: Path, zoom_in: bool):
+def render_photo_scene(ff: str, item: Dict, ovl: Path, nar: Optional[Path], dur: float, out: Path, lead: float = 0.0):
+    """사진은 움직이지 않게 고정 (확대 애니메이션은 화면이 떨려 보여서 뺌). 장면 전환은 build_clip 에서 부드럽게."""
     base = out.with_suffix(".jpg")
-    _photo_base(item["path"], base)
-    frames = max(1, int(round(dur * FPS)))
-    step = 0.07 / frames
-    z = f"min(1+{step:.6f}*on,1.07)" if zoom_in else f"max(1.07-{step:.6f}*on,1)"
-    a_in, a_filter = _scene_audio_args(nar, dur, 2)
-    fc = (f"[0:v]scale=in_range=pc:out_range=tv,format=yuv420p,zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={W}x{H}:fps={FPS},"
-          f"setsar=1[bg];[bg][1:v]overlay=0:0:shortest=1,format=yuv420p[v];{a_filter}")
-    _run([ff, "-hide_banner", "-loglevel", "error", "-y", "-i", str(base), "-loop", "1", "-t", f"{dur:.3f}", "-i", str(ovl),
+    _photo_base(item["path"], base, scale=1.0)
+    a_in, a_filter = _scene_audio_args(nar, dur, 2, lead)
+    fc = (f"[0:v]scale={W}:{H},scale=in_range=pc:out_range=tv,format=yuv420p,fps={FPS},setsar=1[bg];"
+          f"[bg][1:v]overlay=0:0,format=yuv420p[v];{a_filter}")
+    _run([ff, "-hide_banner", "-loglevel", "error", "-y", "-loop", "1", "-t", f"{dur:.3f}", "-i", str(base),
+          "-loop", "1", "-t", f"{dur:.3f}", "-i", str(ovl),
           *a_in, "-filter_complex", fc, "-map", "[v]", "-map", "[a]", "-t", f"{dur:.3f}", *_ENC, str(out)])
     base.unlink(missing_ok=True)
 
 
-def render_video_scene(ff: str, item: Dict, ovl: Path, nar: Optional[Path], dur: float, out: Path):
+def render_video_scene(ff: str, item: Dict, ovl: Path, nar: Optional[Path], dur: float, out: Path, lead: float = 0.0):
     info = item.get("info") or probe(ff, item["path"])
     portrait = info["w"] and info["h"] / max(info["w"], 1) >= 1.5
     start = 0.0
@@ -589,7 +597,8 @@ def render_video_scene(ff: str, item: Dict, ovl: Path, nar: Optional[Path], dur:
               "-t", f"{dur:.3f}", "-i", item["path"], "-loop", "1", "-t", f"{dur:.3f}", "-i", str(ovl)]
     if nar:
         inputs += ["-i", str(nar)]
-        a = (f"[2:a]aformat=sample_rates=44100:channel_layouts=stereo,apad,atrim=0:{dur:.3f}[n]")
+        delay = f"adelay={int(lead * 1000)}:all=1," if lead > 0 else ""
+        a = (f"[2:a]aformat=sample_rates=44100:channel_layouts=stereo,atempo={TEMPO},{delay}apad,atrim=0:{dur:.3f}[n]")
         if info["audio"]:     # 현장 소리는 작게 깔기
             a += (f";[0:a]aformat=sample_rates=44100:channel_layouts=stereo,volume=0.12,apad,atrim=0:{dur:.3f}[o];"
                   f"[n][o]amix=inputs=2:duration=first:normalize=0[a]")
@@ -605,15 +614,39 @@ def render_video_scene(ff: str, item: Dict, ovl: Path, nar: Optional[Path], dur:
 
 def _scene_seconds(item: Dict, caption: str, nar_sec: float) -> float:
     if nar_sec:
-        d = nar_sec + 0.35
+        d = nar_sec + 0.25
     else:
         d = 1.4 + 0.16 * len(re.sub(r"\s|==", "", caption))
-    d = max(2.2, min(d, 7.0))
+    d = max(2.2, min(d, 9.0))
     if item["kind"] == "영상" and not nar_sec:
         vd = (item.get("info") or {}).get("duration") or 0
         if vd:
             d = max(2.2, min(vd, 6.0))
     return round(d, 3)
+
+
+XFADE = 0.3              # 장면 사이 부드러운 전환(디졸브) 길이(초)
+TEMPO = 1.1              # 나레이션 말 빠르기 (숏폼 기본 속도에 맞춰 조금 빠르게)
+
+
+def _join_crossfade(ff: str, parts: List[Path], durs: List[float], out: Path) -> float:
+    """장면 조각을 디졸브 전환으로 이어 붙인다. 반환: 전체 길이(초)."""
+    if len(parts) == 1:
+        shutil.copy(parts[0], out)
+        return round(durs[0], 1)
+    args = [ff, "-hide_banner", "-loglevel", "error", "-y"]
+    for p in parts:
+        args += ["-i", str(p)]
+    fc, v, a, length = [], "[0:v]", "[0:a]", durs[0]
+    for k in range(1, len(parts)):
+        off = length - XFADE
+        nv, na = f"[v{k}]", f"[a{k}]"
+        fc.append(f"{v}[{k}:v]xfade=transition=fade:duration={XFADE}:offset={off:.3f}{nv}")
+        fc.append(f"{a}[{k}:a]acrossfade=d={XFADE}:c1=tri:c2=tri{na}")
+        v, a, length = nv, na, length + durs[k] - XFADE
+    _run(args + ["-filter_complex", ";".join(fc), "-map", v, "-map", a, *_ENC, "-movflags", "+faststart", str(out)],
+         timeout=1200)
+    return round(length, 1)
 
 
 # ─────────────────────────────── 전체 만들기 ───────────────────────────────
@@ -654,32 +687,29 @@ def build_clip(api_key: str, script: Dict, items: List[Dict], voice: str = "fema
 
             with ThreadPoolExecutor(max_workers=3) as ex:
                 for i, p, sec in ex.map(one, todo):
-                    nar_files[i], nar_secs[i] = p, sec
+                    nar_files[i], nar_secs[i] = p, sec / TEMPO
                     done += 1
                     say(f"나레이션 만드는 중... ({done}/{len(todo)})", 8 + int(30 * done / max(len(todo), 1)))
         # 2) 장면마다 영상 조각
-        parts = []
-        total = 0.0
+        parts, durs = [], []
         for i, s in enumerate(scenes):
             it = by_key[s["media"]]
-            dur = _scene_seconds(it, s["caption"], nar_secs[i])
+            lead = XFADE if i > 0 else 0.0                    # 전환되는 동안 나레이션이 겹치지 않게 살짝 늦게 시작
+            dur = _scene_seconds(it, s["caption"], nar_secs[i]) + lead + (XFADE if i < len(scenes) - 1 else 0.0)
             ovl = work / f"ovl_{i:02d}.png"
             overlay_png(script["title_lines"], s["caption"], sponsor, ovl, fonts)
             part = work / f"part_{i:02d}.mp4"
             say(f"장면 합치는 중... ({i + 1}/{len(scenes)})", 40 + int(50 * i / len(scenes)))
             if it["kind"] == "사진":
-                render_photo_scene(ff, it, ovl, nar_files[i], dur, part, zoom_in=(i % 2 == 0))
+                render_photo_scene(ff, it, ovl, nar_files[i], dur, part, lead)
             else:
-                render_video_scene(ff, it, ovl, nar_files[i], dur, part)
+                render_video_scene(ff, it, ovl, nar_files[i], dur, part, lead)
             parts.append(part)
-            total += dur
+            durs.append(dur)
         # 3) 이어 붙이기
         say("마무리하는 중...", 93)
-        lst = work / "list.txt"
-        lst.write_text("".join(f"file '{p.as_posix()}'\n" for p in parts), encoding="utf-8")
         out = work / "clip.mp4"
-        _run([ff, "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
-              "-c", "copy", "-movflags", "+faststart", str(out)])
+        total = _join_crossfade(ff, parts, durs, out)
         final = WORK_DIR / f"clip_{int(time.time())}.mp4"
         os.replace(out, final)
         say("완료", 100)
