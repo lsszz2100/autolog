@@ -233,8 +233,34 @@ def _video_frame(ff: str, path: str, at: float) -> Optional[str]:
 
 
 # ─────────────────────────────── 대본 ───────────────────────────────
+def _rules_block(rules: Optional[Dict]) -> str:
+    """가이드에서 뽑은 클립 조건 → 대본 프롬프트용 '반드시 지킬 것' 목록."""
+    if not rules:
+        return ""
+    out = []
+    if rules.get("min_seconds") or rules.get("max_seconds"):
+        out.append(f"- 영상 길이: {rules.get('min_seconds') or '제한 없음'}초 이상 ~ {rules.get('max_seconds') or '제한 없음'}초 이하")
+    if rules.get("keywords"):
+        out.append("- 자막·나레이션·상단 제목 중 어딘가에 꼭 넣을 키워드(그대로): " + ", ".join(rules["keywords"]))
+    if rules.get("phrases"):
+        out.append("- 꼭 넣을 문구(글자 그대로, 짧으면 마지막 장면 자막에, 길면 클립 설명에): " + " / ".join(rules["phrases"]))
+    if rules.get("must_show"):
+        out.append("- 꼭 보여 줄 장면(소재 중 맞는 사진·영상을 골라 배치): " + ", ".join(rules["must_show"]))
+    if rules.get("first_scene"):
+        out.append("- 첫 장면 조건: " + rules["first_scene"])
+    if rules.get("forbidden"):
+        out.append("- 쓰면 안 되는 말: " + ", ".join(rules["forbidden"]))
+    if rules.get("hashtags"):
+        out.append("- 클립 설명 해시태그(그대로): " + " ".join(rules["hashtags"]))
+    if rules.get("description_notes"):
+        out.append("- 클립 설명 조건: " + rules["description_notes"])
+    for o in rules.get("other") or []:
+        out.append("- " + o)
+    return ("\n[가이드 클립 조건 — 아래 구성·말투 규칙보다 우선, 반드시 지킬 것]\n" + "\n".join(out) + "\n") if out else ""
+
+
 def _script_prompt(items: List[Dict], seconds: int, tone: str, guide: str, notes: str, brand: str,
-                   post_title: str, post_body: str, n_scenes: int) -> str:
+                   post_title: str, post_body: str, n_scenes: int, rules: Optional[Dict] = None, fix: str = "") -> str:
     tone_ko = TONES.get(tone, TONES["review"])[1]
     labels = "\n".join(f"- {it['key']}: {'사진' if it['kind'] == '사진' else '영상'}"
                        + (f" (영상 길이 {it.get('duration', 0):.0f}초, 제목 '{it.get('title', '')}')" if it["kind"] == "영상" else "")
@@ -254,7 +280,7 @@ def _script_prompt(items: List[Dict], seconds: int, tone: str, guide: str, notes
 {(notes or '(없음)')[:2000]}
 블로그 원고 일부:
 {(post_body or '(없음)')[:3000]}
-
+{_rules_block(rules)}{fix}
 [구성]
 - 전체 길이 약 {seconds}초. 장면 {n_scenes}개 안팎(최대 {MAX_SCENES}개), 한 장면은 약 4초. 장면 하나 = 소재 하나.
 - 소재는 모두 한 번씩 쓰세요. 소재가 장면 수보다 적으면 같은 소재를 다른 장면에 한 번 더 써도 됩니다(연달아 같은 소재는 금지). 순서는 이야기 흐름에 맞게.
@@ -266,6 +292,7 @@ def _script_prompt(items: List[Dict], seconds: int, tone: str, guide: str, notes
 - 나레이션은 장면당 1~2문장, 공백 포함 18~26자 정도(소리 내 읽어 약 3.5초). 나레이션을 모두 합쳐 공백 포함 {int(seconds * 4.2)}~{int(seconds * 4.8)}자를 넘지 마세요. 숫자·가격은 소리 내 읽기 쉬운 한글로 (예: 12,000원 → 만 이천 원).
 - 자막: 나레이션을 더 짧게 줄인 핵심 문장. 1~2줄, 줄당 공백 포함 13자 이내. 장면마다 가장 중요한 단어 하나를 ==단어== 로 감싸 강조. 숫자·용량·가격은 자막에서는 아라비아 숫자 그대로 (예: 1+1, 150ml, 12,000원 — 한글로 풀어 쓰는 건 나레이션만). 이모지 금지.
 - 상단 제목: 2줄, 줄당 공백 포함 11자 이내. 검색 키워드(업체·지역·제품)가 들어가게, 핵심 단어 하나 ==강조==.
+- 클립 설명(description): 클립을 올릴 때 설명란에 붙여 넣을 글. 2~4문장 소개 + "🔗 자세한 후기: 블로그 링크" 한 줄 + 해시태그 5~10개(가이드 해시태그가 있으면 그것 먼저). 줄바꿈은 \\n.
 
 [사실 규칙]
 - 사진·영상에 보이는 것, 메모·가이드·원고에 있는 사실만 쓰세요. 맛·가격·위치·경험을 지어내지 마세요.
@@ -273,11 +300,13 @@ def _script_prompt(items: List[Dict], seconds: int, tone: str, guide: str, notes
 
 아래 JSON 하나만 출력하세요 (설명 문장 금지):
 {{"title_lines": ["제목 1줄", "제목 2줄"],
-  "scenes": [{{"media": "사진1", "caption": "자막 ==강조== 문장", "narration": "나레이션 문장"}}]}}"""
+  "scenes": [{{"media": "사진1", "caption": "자막 ==강조== 문장", "narration": "나레이션 문장"}}],
+  "description": "클립 설명란 글"}}"""
 
 
 def make_script(api_key: str, items: List[Dict], seconds: int = 30, tone: str = "review", guide: str = "",
-                notes: str = "", brand: str = "", post_title: str = "", post_body: str = "") -> Dict:
+                notes: str = "", brand: str = "", post_title: str = "", post_body: str = "",
+                rules: Optional[Dict] = None) -> Dict:
     import gemini_client
     from ai import WRITER_MODELS
     if not (api_key or "").strip():
@@ -300,7 +329,8 @@ def make_script(api_key: str, items: List[Dict], seconds: int = 30, tone: str = 
             b64 = _video_frame(ff, it["path"], max(0.0, min(info["duration"] / 2, 3.0)))
         if b64:
             images.append(("image/jpeg", b64))
-    seconds = seconds if seconds in SECONDS_CHOICES else 30
+    seconds = max(10, min(int(seconds or 30), 90))
+    seconds = target_seconds(seconds, rules)
     n_scenes = max(3, min(MAX_SCENES, round(seconds / 5)))
     valid = {it["key"] for it in items}
 
@@ -310,12 +340,19 @@ def make_script(api_key: str, items: List[Dict], seconds: int = 30, tone: str = 
             return None
         return d if any(_media_key(s.get("media")) in valid for s in d["scenes"] if isinstance(s, dict)) else None
 
-    data, model = gemini_client.generate(
-        api_key.strip(), _script_prompt(items, seconds, tone, guide, notes, brand, post_title, post_body, n_scenes),
-        WRITER_MODELS, generation_config={"temperature": 0.8, "maxOutputTokens": 4000}, timeout=60,
-        accept=accept, images=images[:16])
-    logger.info(f"🎬 클립 대본 생성 ({model})")
-    script = clean_script(data, items)
+    fix = ""
+    for attempt in range(2):          # 가이드 키워드·문구가 빠지면 한 번 더 고쳐 쓰게 한다
+        data, model = gemini_client.generate(
+            api_key.strip(), _script_prompt(items, seconds, tone, guide, notes, brand, post_title, post_body, n_scenes,
+                                            rules, fix),
+            WRITER_MODELS, generation_config={"temperature": 0.8, "maxOutputTokens": 4000}, timeout=60,
+            accept=accept, images=images[:16])
+        logger.info(f"🎬 클립 대본 생성 ({model})")
+        script = clean_script(data, items)
+        missing = [c["item"] for c in check_script(script, rules) if c["ok"] is False and c["kind"] in ("keyword", "phrase", "forbidden")]
+        if not missing:
+            break
+        fix = "\n[지난 대본에서 지키지 못한 가이드 조건 — 이번에는 꼭 지킬 것]\n" + "\n".join("- " + m for m in missing) + "\n"
     sc = script["scenes"]
     if sc and sc[0]["narration"] and not sc[0]["narration"].startswith("안녕하세요"):
         first = re.sub(r"^안녕[!~.,\s]*", "", sc[0]["narration"])       # 반말 인사(안녕!)는 존댓말로
@@ -323,6 +360,173 @@ def make_script(api_key: str, items: List[Dict], seconds: int = 30, tone: str = 
     if len(sc) > 1 and not ("링크" in sc[-1]["narration"] and "블로그" in sc[-1]["narration"]):
         sc[-1]["narration"] = "자세한 내용은 블로그와 클립 설명에 있는 링크를 꼭 참고해 주세요."
     return script
+
+
+# ─────────────────────────────── 가이드 맞춤 (체험단·기자단 클립 조건) ───────────────────────────────
+_RULE_LISTS = ("keywords", "phrases", "must_show", "forbidden", "hashtags", "other")
+
+
+def normalize_rules(d) -> Dict:
+    """가이드 조건 JSON 검사·정리 (화면에서 돌아온 값도 여기를 거친다)."""
+    d = d if isinstance(d, dict) else {}
+
+    def num(v):
+        try:
+            v = int(float(v))
+            return v if 3 <= v <= 600 else None
+        except (TypeError, ValueError):
+            return None
+
+    def lst(v, limit=60, n=12):
+        if isinstance(v, str):
+            v = re.split(r"[,\n]", v)
+        out = []
+        for x in v if isinstance(v, list) else []:
+            x = re.sub(r"\s+", " ", str(x or "")).strip()[:limit]
+            if x and x not in out:
+                out.append(x)
+        return out[:n]
+
+    r = {"min_seconds": num(d.get("min_seconds")), "max_seconds": num(d.get("max_seconds")),
+         "sponsor_required": bool(d.get("sponsor_required")),
+         "sponsor_text": re.sub(r"\s+", " ", str(d.get("sponsor_text") or "")).strip()[:20],
+         "narration": d.get("narration") if d.get("narration") in ("required", "forbidden") else "any",
+         "first_scene": re.sub(r"\s+", " ", str(d.get("first_scene") or "")).strip()[:120],
+         "description_notes": re.sub(r"\s+", " ", str(d.get("description_notes") or "")).strip()[:300]}
+    for k in _RULE_LISTS:
+        r[k] = lst(d.get(k), 200 if k in ("phrases", "other") else 60)
+    r["hashtags"] = ["#" + h.lstrip("#").replace(" ", "") for h in r["hashtags"] if h.lstrip("#").strip()]
+    if r["min_seconds"] and r["max_seconds"] and r["min_seconds"] > r["max_seconds"]:
+        r["min_seconds"], r["max_seconds"] = r["max_seconds"], r["min_seconds"]
+    r["found"] = any(r[k] for k in ("min_seconds", "max_seconds", "sponsor_required", "first_scene", "description_notes",
+                                    *_RULE_LISTS)) or r["narration"] != "any"
+    return r
+
+
+def _rules_by_regex(guide: str) -> Dict:
+    """AI 없이도 잡히는 기본 조건 (초·해시태그·협찬 표기)."""
+    g = guide or ""
+    r: Dict = {"hashtags": re.findall(r"#[^\s#,]+", g)}
+    clip_part = "\n".join(l for l in g.splitlines() if re.search(r"클립|영상|숏폼|릴스|쇼츠", l)) or ""
+    m = re.search(r"(\d{1,3})\s*초\s*(?:이상|넘게|부터)", clip_part)
+    if m:
+        r["min_seconds"] = int(m.group(1))
+    m = re.search(r"(\d{1,3})\s*초\s*(?:이하|이내|미만|까지)", clip_part)
+    if m:
+        r["max_seconds"] = int(m.group(1))
+    m = re.search(r"(\d{1,3})\s*[~\-]\s*(\d{1,3})\s*초", clip_part)
+    if m:
+        r["min_seconds"], r["max_seconds"] = int(m.group(1)), int(m.group(2))
+    if re.search(r"(협찬|제공|광고)\s*(표기|표시|문구|명시)", clip_part):
+        r["sponsor_required"] = True
+    return r
+
+
+def guide_rules(api_key: str, guide: str) -> Dict:
+    """업체·대행사 가이드에서 '클립 영상' 조건만 뽑는다. AI가 안 되면 정규식으로 기본 조건만."""
+    guide = (guide or "").strip()
+    if not guide:
+        return normalize_rules({})
+    base = _rules_by_regex(guide)
+    if not (api_key or "").strip():
+        return normalize_rules(base)
+    import gemini_client
+    from ai import WRITER_MODELS
+    prompt = f"""아래는 블로그 체험단·기자단 업체 가이드입니다. 이 중 '클립·숏폼 영상'을 만들 때 지켜야 할 조건만 뽑아 JSON으로 주세요.
+블로그 글(본문)에만 해당하는 조건(글자 수, 사진 장수 등)은 빼고, 영상·클립 조건이 따로 없으면 업체명·필수 키워드·필수 문구·금지어·해시태그처럼 영상에도 적용될 공통 조건만 넣으세요.
+가이드에 없는 조건은 지어내지 말고 빈 값으로 두세요. 키워드·문구·해시태그는 가이드 글자 그대로.
+
+[가이드]
+{guide[:6000]}
+
+JSON 하나만 출력 (설명 금지):
+{{"min_seconds": 숫자 또는 null, "max_seconds": 숫자 또는 null,
+  "sponsor_required": true/false, "sponsor_text": "영상에 표시할 협찬 문구(20자 이내, 가이드에 있을 때만)",
+  "narration": "required" | "forbidden" | "any",
+  "keywords": ["영상에 꼭 나올 키워드"], "phrases": ["꼭 넣을 문구"], "must_show": ["꼭 보여 줄 장면"],
+  "first_scene": "첫 장면 조건(있으면)", "forbidden": ["금지어"], "hashtags": ["#해시태그"],
+  "description_notes": "클립 설명란 조건(링크·업체 정보 등, 있으면)", "other": ["그 밖의 영상 조건"]}}"""
+    try:
+        data, _ = gemini_client.generate(api_key.strip(), prompt, WRITER_MODELS,
+                                         generation_config={"temperature": 0.1, "maxOutputTokens": 2000}, timeout=40,
+                                         accept=lambda t: gemini_client.extract_json(t) if isinstance(gemini_client.extract_json(t), dict) else None)
+    except Exception as e:
+        logger.warning(f"가이드 클립 조건 읽기 실패 → 기본 조건만 사용: {e}")
+        return normalize_rules(base)
+    data = data if isinstance(data, dict) else {}
+    for k, v in base.items():            # 정규식으로 확실히 잡힌 값은 보탠다
+        if k == "hashtags":
+            data["hashtags"] = list(dict.fromkeys(list(data.get("hashtags") or []) + v))
+        elif not data.get(k):
+            data[k] = v
+    return normalize_rules(data)
+
+
+def target_seconds(seconds: int, rules: Optional[Dict]) -> int:
+    """고른 길이를 가이드 범위 안으로 (범위 가운데보다 조금 넉넉하게)."""
+    if not rules:
+        return seconds
+    lo, hi = rules.get("min_seconds"), rules.get("max_seconds")
+    if lo and seconds < lo + 2:
+        seconds = lo + 3
+    if hi and seconds > hi - 2:
+        seconds = max(hi - 3, lo or 5)
+    return max(8, min(seconds, 90))
+
+
+def estimate_seconds(script: Dict, voice: str = "female_bright") -> float:
+    """대본으로 대략의 영상 길이 계산 (한국어 나레이션 약 7자/초, 1.1배속)."""
+    total = 0.0
+    for s in script.get("scenes") or []:
+        chars = len(re.sub(r"\s", "", s.get("narration") or ""))
+        if voice != "none" and chars:
+            d = chars / 5.4 / TEMPO + 0.25
+        else:
+            d = 1.4 + 0.16 * len(re.sub(r"\s|==", "", s.get("caption") or ""))
+        total += max(2.2, min(d, 9.0)) + XFADE
+    return round(max(0.0, total - XFADE), 1)
+
+
+def _norm(t: str) -> str:
+    return re.sub(r"[\s=#]", "", t or "").lower()
+
+
+def check_script(script: Dict, rules: Optional[Dict], sponsor: Optional[str] = None, voice: Optional[str] = None,
+                 seconds: Optional[float] = None) -> List[Dict]:
+    """가이드 조건을 지켰는지 항목별로 확인. ok: True 지킴 / False 안 지킴 / None 직접 확인 필요."""
+    if not rules or not rules.get("found"):
+        return []
+    sc = script.get("scenes") or []
+    body = " ".join([*(script.get("title_lines") or []), *(s.get("caption", "") for s in sc), *(s.get("narration", "") for s in sc)])
+    desc = script.get("description") or ""
+    desc_text = re.sub(r"#\S+", "", desc)                     # 해시태그로만 들어간 건 문구로 치지 않음
+    nb, nall = _norm(body), _norm(" ".join([body, desc_text, sponsor or ""]))
+    out: List[Dict] = []
+    for k in rules.get("keywords") or []:
+        out.append({"kind": "keyword", "item": f"키워드 '{k}'", "ok": _norm(k) in nb})
+    for ph in rules.get("phrases") or []:
+        out.append({"kind": "phrase", "item": f"문구 '{ph[:30]}'", "ok": _norm(ph) in nall})
+    for w in rules.get("forbidden") or []:
+        out.append({"kind": "forbidden", "item": f"금지어 '{w}' 안 쓰기", "ok": _norm(w) not in nall})
+    if rules.get("hashtags"):
+        miss = [h for h in rules["hashtags"] if _norm(h) not in _norm(desc)]
+        out.append({"kind": "hashtag", "item": "클립 설명 해시태그", "ok": not miss,
+                    "detail": ("빠짐: " + " ".join(miss)) if miss else ""})
+    if rules.get("sponsor_required") and sponsor is not None:
+        out.append({"kind": "sponsor", "item": "협찬 표시", "ok": bool(sponsor.strip())})
+    if voice is not None and rules.get("narration") == "required":
+        out.append({"kind": "narration", "item": "나레이션 넣기", "ok": voice != "none"})
+    if voice is not None and rules.get("narration") == "forbidden":
+        out.append({"kind": "narration", "item": "나레이션 없이 (자막만)", "ok": voice == "none"})
+    lo, hi = rules.get("min_seconds"), rules.get("max_seconds")
+    if (lo or hi) and seconds is not None:
+        ok = (not lo or seconds >= lo) and (not hi or seconds <= hi)
+        out.append({"kind": "length", "item": f"길이 {lo or ''}~{hi or ''}초", "ok": ok, "detail": f"{seconds:.1f}초"})
+    for m in rules.get("must_show") or []:
+        out.append({"kind": "show", "item": f"'{m}' 장면 넣기", "ok": None, "detail": "장면 사진을 직접 확인해 주세요"})
+    if rules.get("first_scene"):
+        out.append({"kind": "show", "item": "첫 장면: " + rules["first_scene"][:40], "ok": None, "detail": "직접 확인"})
+    return out
 
 
 def _media_key(v) -> str:
@@ -356,7 +560,9 @@ def clean_script(data: Dict, items: List[Dict]) -> Dict:
             break
     if not scenes:
         raise ClipError("대본에 쓸 수 있는 장면이 없습니다. 다시 만들어 주세요.")
-    return {"title_lines": title, "scenes": scenes}
+    desc = str(data.get("description") or "").replace("\\n", "\n")
+    desc = re.sub(r"[ \t]+", " ", re.sub(r"\*\*|==", "", desc)).strip()[:1500]
+    return {"title_lines": title, "scenes": scenes, "description": desc}
 
 
 # ─────────────────────────────── 나레이션 (Gemini TTS) ───────────────────────────────
@@ -651,7 +857,8 @@ def _join_crossfade(ff: str, parts: List[Path], durs: List[float], out: Path) ->
 
 # ─────────────────────────────── 전체 만들기 ───────────────────────────────
 def build_clip(api_key: str, script: Dict, items: List[Dict], voice: str = "female_bright", tone: str = "review",
-               sponsor: str = "", progress: Optional[Callable[[str, int], None]] = None) -> Dict:
+               sponsor: str = "", progress: Optional[Callable[[str, int], None]] = None,
+               min_seconds: Optional[int] = None) -> Dict:
     """대본 → mp4. 반환 {path, seconds, scenes}."""
     def say(msg: str, pct: int):
         logger.info(f"🎬 {msg}")
@@ -692,10 +899,15 @@ def build_clip(api_key: str, script: Dict, items: List[Dict], voice: str = "fema
                     say(f"나레이션 만드는 중... ({done}/{len(todo)})", 8 + int(30 * done / max(len(todo), 1)))
         # 2) 장면마다 영상 조각
         parts, durs = [], []
+        plan = [_scene_seconds(by_key[s["media"]], s["caption"], nar_secs[i]) + (XFADE if i > 0 else 0.0)
+                + (XFADE if i < len(scenes) - 1 else 0.0) for i, s in enumerate(scenes)]
+        est = sum(plan) - XFADE * (len(plan) - 1)
+        if min_seconds and est < min_seconds + 0.5:          # 가이드 최소 길이: 마지막 장면을 조금 더 보여 준다
+            plan[-1] += min_seconds + 0.5 - est
         for i, s in enumerate(scenes):
             it = by_key[s["media"]]
             lead = XFADE if i > 0 else 0.0                    # 전환되는 동안 나레이션이 겹치지 않게 살짝 늦게 시작
-            dur = _scene_seconds(it, s["caption"], nar_secs[i]) + lead + (XFADE if i < len(scenes) - 1 else 0.0)
+            dur = plan[i]
             ovl = work / f"ovl_{i:02d}.png"
             overlay_png(script["title_lines"], s["caption"], sponsor, ovl, fonts)
             part = work / f"part_{i:02d}.mp4"

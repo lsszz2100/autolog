@@ -1372,6 +1372,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     .rv-item .rv-num { min-width:18px; text-align:center; color:#059669; flex:0 0 auto; }
     .rv-item .rv-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; word-break:break-all; }
     .rv-item .rv-name input { margin-top:3px; padding:3px 6px; font-size:12px; }
+    .clip-guide { margin-top:8px; padding:8px 10px; border:1px solid #c7d2fe; background:#eef2ff; border-radius:8px; font-size:12.5px; line-height:1.6; }
+    .clip-guide b { color:#3730a3; }
+    .clip-guide .ck { display:flex; gap:6px; align-items:baseline; }
+    .clip-guide .ck small { color:#64748b; }
     .rv-clip-opts { display:flex; flex-wrap:wrap; gap:8px 14px; margin-top:8px; font-size:12.5px; }
     .rv-clip-opts label { display:flex; align-items:center; gap:6px; margin:0; font-weight:600; }
     .rv-clip-opts select { width:auto; padding:4px 8px; font-size:12.5px; }
@@ -1936,7 +1940,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <!-- 숏폼 클립 만들기: 올린 사진·영상 + 한글 자막 + 한국어 나레이션 → 세로 영상 -->
         <div class="card">
           <div class="card-title"><span>🎞 숏폼 클립 만들기</span></div>
-          <div class="user-box-hint">위에 올린 사진·영상을 조합해 <b>세로 9:16 숏폼</b>을 만듭니다. AI가 장면을 직접 보고 <b>한글 자막</b>과 <b>한국어 나레이션</b> 대본을 쓰고, 고친 대본대로 영상을 만듭니다. 처음 한 번은 영상 도구(약 39MB)를 내려받습니다.</div>
+          <div class="user-box-hint">위에 올린 사진·영상을 조합해 <b>세로 9:16 숏폼</b>을 만듭니다. AI가 장면을 직접 보고 <b>한글 자막</b>과 <b>한국어 나레이션</b> 대본을 쓰고, 고친 대본대로 영상을 만듭니다. <b>위에 업체 가이드를 넣으면</b> 가이드의 클립 조건(길이·필수 키워드·문구·협찬 표시·해시태그)을 읽어 대본에 맞추고, 지켰는지 확인해 드립니다. 처음 한 번은 영상 도구(약 39MB)를 내려받습니다.</div>
           <div class="rv-clip-opts">
             <label>길이 <select id="clip_seconds"><option value="15">약 15초</option><option value="30" selected>약 30초</option><option value="45">약 45초</option><option value="60">약 60초</option></select></label>
             <label>말투 <select id="clip_tone"><option value="review" selected>친근한 후기</option><option value="info">차분한 정보형</option><option value="hype">텐션 높은 숏폼</option></select></label>
@@ -1950,6 +1954,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             <button type="button" id="clip-script-btn" class="btn-outline" style="flex:1;" onclick="clipScript(this)">✍️ AI로 클립 대본 만들기 (자막·나레이션)</button>
             <button type="button" class="btn-outline" style="flex:0 0 auto;" onclick="clipManual()" title="사진·영상마다 빈 장면을 만들어 직접 씁니다">직접 쓰기</button>
           </div>
+          <div id="clip-guide" class="clip-guide" style="display:none;"></div>
           <div id="clip-editor" style="display:none;margin-top:10px;">
             <div class="form-group">
               <label>상단 제목 <span style="font-weight:400;color:#64748b;">(2줄, ==단어== 는 노란색 강조)</span></label>
@@ -1959,6 +1964,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             <label>장면 <span style="font-weight:400;color:#64748b;">(자막은 짧게, 나레이션은 소리 내 읽을 문장)</span></label>
             <div id="clip-scenes" class="clip-scenes"></div>
             <button type="button" class="btn-outline" style="padding:4px 10px;font-size:12px;margin-top:6px;" onclick="clipAddScene()">+ 장면 추가</button>
+            <div class="form-group" style="margin-top:10px;">
+              <label>클립 설명 <span style="font-weight:400;color:#64748b;">(클립 올릴 때 설명란에 붙여 넣기 — 블로그 링크를 넣어 주세요)</span>
+                <button type="button" class="btn-outline" style="padding:2px 8px;font-size:11.5px;margin-left:6px;" onclick="clipCopyDesc(this)">복사</button></label>
+              <textarea id="clip_desc" rows="4" maxlength="1500" placeholder="소개 2~4문장 + 🔗 블로그 링크 + 해시태그"></textarea>
+            </div>
             <button type="button" id="clip-make-btn" class="btn-green" style="width:100%;margin-top:10px;" onclick="clipMake(this)">🎬 이 대본으로 클립 만들기</button>
           </div>
           <div id="clip-status" class="user-box-hint" style="display:none;margin-top:8px;"></div>
@@ -4076,7 +4086,28 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
 
     // ── 숏폼 클립 만들기 ──
-    let clipScenes = [], clipMediaKeys = [], clipLast = null;
+    let clipScenes = [], clipMediaKeys = [], clipLast = null, clipRules = null;
+    function clipChecksHtml(checks) {
+      return (checks || []).map(c => `<div class="ck">${c.ok === true ? '✅' : c.ok === false ? '⚠️' : '👀'} <span>${esc(c.item)}</span>`
+        + (c.detail ? ` <small>${esc(c.detail)}</small>` : '') + `</div>`).join('');
+    }
+    function renderClipGuide(d, after) {
+      const box = document.getElementById('clip-guide');
+      const r = d && d.rules;
+      if (!r) { box.style.display = 'none'; box.innerHTML = ''; return; }
+      const len = (r.min_seconds || r.max_seconds) ? `${r.min_seconds || ''}~${r.max_seconds || ''}초` : '';
+      const head = after ? '<b>📋 가이드 조건 최종 확인 (완성된 클립 기준)</b>'
+        : `<b>📋 가이드에서 읽은 클립 조건</b>${len ? ` · 길이 ${len} → 목표 약 ${d.seconds}초 (예상 ${d.estimate}초)` : ` · 예상 길이 ${d.estimate}초`}`;
+      const fails = (d.checks || []).filter(c => c.ok === false).length;
+      box.innerHTML = head + clipChecksHtml(d.checks)
+        + (fails ? `<div style="color:#b45309;margin-top:4px;">⚠️ 표시 항목은 대본·설정을 고친 뒤 다시 만들어 주세요.</div>` : '');
+      box.style.display = 'block';
+    }
+    function clipCopyDesc(btn) {
+      const t = document.getElementById('clip_desc');
+      (navigator.clipboard ? navigator.clipboard.writeText(t.value) : Promise.reject()).catch(() => { t.select(); document.execCommand('copy'); });
+      const o = btn.innerText; btn.innerText = '복사됨'; setTimeout(() => btn.innerText = o, 1200);
+    }
     function clipMediaThumb(key) {
       const m = /^(사진|영상)(\d+)$/.exec(key || '');
       if (m && m[1] === '사진' && rvPhotos[+m[2] - 1] && rvPhotos[+m[2] - 1].thumb) return `<img src="${rvPhotos[+m[2] - 1].thumb}">`;
@@ -4134,6 +4165,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       try {
         const d = await postJSON('/api/review/clip_script', {
           ...media, seconds: +document.getElementById('clip_seconds').value, tone: document.getElementById('clip_tone').value,
+          voice: document.getElementById('clip_voice').value,
+          sponsor: document.getElementById('clip_sponsor').checked ? document.getElementById('clip_sponsor_text').value.trim() : '',
           guide: document.getElementById('rv_guide').value, notes: document.getElementById('rv_notes').value,
           brand: document.getElementById('rv_brand').value, title: document.getElementById('rv_title').value,
           content: document.getElementById('rv_content').value });
@@ -4141,6 +4174,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         document.getElementById('clip_title1').value = (sc.title_lines || [])[0] || '';
         document.getElementById('clip_title2').value = (sc.title_lines || [])[1] || '';
         clipScenes = (sc.scenes || []).map(x => ({ media: x.media, caption: x.caption || '', narration: x.narration || '' }));
+        document.getElementById('clip_desc').value = sc.description || '';
+        clipRules = d.rules || null;
+        if (clipRules) {      // 가이드 조건에 맞춰 설정을 바꿔 둔다
+          if (d.sponsor) { document.getElementById('clip_sponsor').checked = true; document.getElementById('clip_sponsor_text').value = d.sponsor; }
+          if (d.voice) document.getElementById('clip_voice').value = d.voice;
+        }
+        renderClipGuide(d, false);
         document.getElementById('clip-editor').style.display = 'block';
         renderClipScenes();
       } catch (e) { alert(e.message || e); }
@@ -4161,7 +4201,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         await postJSON('/api/review/clip_make', {
           ...media, voice, tone: document.getElementById('clip_tone').value,
           sponsor: document.getElementById('clip_sponsor').checked ? document.getElementById('clip_sponsor_text').value.trim() : '',
-          script: { title_lines: [document.getElementById('clip_title1').value, document.getElementById('clip_title2').value].filter(x => x.trim()), scenes } });
+          rules: clipRules,
+          script: { title_lines: [document.getElementById('clip_title1').value, document.getElementById('clip_title2').value].filter(x => x.trim()), scenes,
+                    description: document.getElementById('clip_desc').value } });
       } catch (e) { alert(e.message || e); btn.disabled = false; st.style.display = 'none'; return; }
       const tick = async () => {
         let d;
@@ -4175,6 +4217,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           v.src = '/api/review/clip_file?id=' + encodeURIComponent(d.result.id) + '&_=' + Date.now() + '#t=0.1';
           document.getElementById('clip-result').style.display = 'block';
           document.getElementById('clip-saved').innerText = d.result.saved ? '저장 위치: ' + d.result.saved : '';
+          if (clipRules) renderClipGuide({ rules: clipRules, checks: d.result.checks }, true);
         } else {
           st.innerHTML = '<span style="color:#dc2626;">❌ ' + esc(d.error || '클립을 만들지 못했습니다.') + '</span>';
         }
@@ -5696,14 +5739,31 @@ class RequestHandler(BaseHTTPRequestHandler):
                 seconds = int(payload.get("seconds") or 30)
             except (TypeError, ValueError):
                 seconds = 30
+            api_key = load_config().get("gemini_api_key", "")
+            voice = str(payload.get("voice") or "female_bright")
+            sponsor = str(payload.get("sponsor") or "")[:20]
             try:
-                script = clip_maker.make_script(load_config().get("gemini_api_key", ""), items, seconds,
+                # 가이드가 있으면 클립 조건(길이·키워드·문구·협찬 표시·해시태그 등)을 먼저 뽑아 대본에 반영
+                rules = clip_maker.guide_rules(api_key, texts["guide"]) if texts["guide"].strip() else None
+                if rules and not rules.get("found"):
+                    rules = None
+                seconds = clip_maker.target_seconds(max(10, min(seconds, 90)), rules)
+                script = clip_maker.make_script(api_key, items, seconds,
                                                 str(payload.get("tone") or "review"), texts["guide"], texts["notes"],
-                                                texts["brand"], texts["title"], texts["content"])
+                                                texts["brand"], texts["title"], texts["content"], rules=rules)
             except Exception as e:
                 logger.warning(f"클립 대본 만들기 실패: {e}")
                 return self._send_json({"ok": False, "message": str(e)}, 400)
-            self._send_json({"ok": True, "script": script, "media": [it["key"] for it in items]})
+            if rules and rules.get("sponsor_required") and not sponsor:
+                sponsor = rules.get("sponsor_text") or "제품 제공 · 협찬"
+            if rules and rules.get("narration") == "forbidden":
+                voice = "none"
+            elif rules and rules.get("narration") == "required" and voice == "none":
+                voice = "female_bright"
+            est = clip_maker.estimate_seconds(script, voice)
+            self._send_json({"ok": True, "script": script, "media": [it["key"] for it in items], "rules": rules,
+                             "seconds": seconds, "estimate": est, "sponsor": sponsor, "voice": voice,
+                             "checks": clip_maker.check_script(script, rules, sponsor, voice, est)})
 
         elif url.path == "/api/review/clip_make":
             # 숏폼 클립 만들기 (백그라운드): 대본 → 나레이션 → 장면 합성 → 올린 영상 목록에 추가할 수 있게 저장
@@ -5720,13 +5780,17 @@ class RequestHandler(BaseHTTPRequestHandler):
             voice = str(payload.get("voice") or "female_bright")
             tone = str(payload.get("tone") or "review")
             sponsor = str(payload.get("sponsor") or "")[:20]
+            rules = clip_maker.normalize_rules(payload.get("rules")) if isinstance(payload.get("rules"), dict) else None
+            if rules and not rules.get("found"):
+                rules = None
             key = load_config().get("gemini_api_key", "")
             if voice != "none" and not key.strip():
                 return self._send_json({"ok": False, "message": "나레이션에는 Gemini API 키가 필요합니다. '나레이션 없음'을 고르거나 키를 넣어 주세요."}, 400)
             name = re.sub(r'[\\/:*?"<>|=]+', "", " ".join(script.get("title_lines") or []))[:40].strip() or "클립"
 
             def job(progress):
-                res = clip_maker.build_clip(key, script, items, voice=voice, tone=tone, sponsor=sponsor, progress=progress)
+                res = clip_maker.build_clip(key, script, items, voice=voice, tone=tone, sponsor=sponsor, progress=progress,
+                                            min_seconds=(rules or {}).get("min_seconds"))
                 saved = ""
                 try:     # 클립 업로드용으로 '동영상\오토로그 클립' 폴더에도 복사
                     folder = Path.home() / "Videos" / "오토로그 클립"
@@ -5739,7 +5803,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 meta = user_media.save_video_file(res["path"], f"{name}.mp4")
                 logger.info(f"🎬 클립 완성: {name} ({res['seconds']}초, 장면 {res['scenes']}개)")
                 return {"id": meta["id"], "name": meta["name"], "title": name, "seconds": res["seconds"],
-                        "scenes": res["scenes"], "saved": saved}
+                        "scenes": res["scenes"], "saved": saved,
+                        "checks": clip_maker.check_script(script, rules, sponsor, voice, res["seconds"])}
 
             if not clip_maker.start_job(job):
                 return self._send_json({"ok": False, "message": "클립을 만드는 중입니다. 끝난 뒤 다시 눌러 주세요."}, 409)
