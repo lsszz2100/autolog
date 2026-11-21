@@ -7,7 +7,7 @@ PRODUCT_NAME = "오토로그"
 PRODUCT_NAME_EN = "AutoLog"
 PRODUCT_TAGLINE = "AI 블로그 자동 발행 스튜디오"
 # 업데이트 설치 파일을 올리는 GitHub 공개 저장소 "소유자/저장소" (소스 코드는 올리지 않음)
-UPDATE_REPO = "lsszz2100/naver-blog-studio-releases"
+UPDATE_REPO = "lsszz2100/autolog-releases"
 # 이 코드가 요구하는 기반(Python·라이브러리·Chromium) 번호. requirements.txt / spec / launcher.py 를 바꿨을 때만 올리고,
 # 그때는 packaging\release_full.bat(전체 설치 파일)로 배포. 평소 코드 수정은 packaging\release.bat(코드만)으로 배포.
 REQUIRED_RUNTIME = 4
