@@ -1,0 +1,49 @@
+# ── 비밀값 (절대 올리지 않음) ──
+packaging/signing_key.hex
+packaging/license_server/.secrets.json
+packaging/license_server/issued.json
+packaging/license_server/.wrangler/
+packaging/license_server/node_modules/
+*.pem
+.env
+.env.*
+
+# ── 사용자 데이터·실행 상태 (계정·키·세션) ──
+data/
+webview/
+logs/
+config.json
+instance.json
+license_cache.json
+license_session.txt
+last_version.txt
+
+# ── 빌드 결과·임시 ──
+.venv/
+.build-venv/
+build/
+dist/
+packaging/output/
+packaging/compiled/
+packaging/__pycache__/
+packaging/MicrosoftEdgeWebview2Setup.exe
+packaging/*.log
+packaging/last_full_release.txt
+packaging/last_full_setup.json
+__pycache__/
+*.pyc
+*.pyd
+*.exe
+
+# ── 큰 캐시 ──
+packaging/.chromium-cache/
+packaging/.*-cache/
+packaging/build_code/
+packaging/.compile-tmp/
+
+# 클립 만들기 도구(개발 실행 시 내려받는 글꼴·ffmpeg)
+tools/
+packaging/_build_log.txt
+
+# 개인 시험 스크립트(블로그 ID 포함) — 공개 저장소에 올리지 않음
+_archive/
