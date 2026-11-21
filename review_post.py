@@ -201,13 +201,14 @@ def body_chars(lines: List[str]) -> int:
 
 # ── 사진·영상·클립 순번 ──
 
-def order_media(lines: List[str], counts: Dict[str, int]) -> List[str]:
-    """[사진:N]·[영상:N]·[클립:N] 을 올린 순서대로 1, 2, 3… 으로 맞추고, 빠진 것도 모두 넣는다.
-    사진은 AI가 쓴 번호를 위치 단서로 삼아 2~4장씩 묶어 글 전체에 고르게 나눈다 (남은 사진을 글 끝에 몰지 않음)."""
+def order_media(lines: List[str], counts: Dict[str, int], as_written: bool = True) -> List[str]:
+    """[사진:N]·[영상:N]·[클립:N] 을 정리하고, 빠진 것도 모두 넣는다.
+    사진: 원고에 쓴 번호가 겹치지 않으면 그 번호·위치 그대로(글 흐름에 맞춘 배치), 빠진 사진은 바로 앞 번호 사진 옆에.
+    번호가 겹치거나 틀리면 위치만 단서로 삼아 2~4장씩 묶어 글 전체에 고르게 나눈다. 영상·클립은 나온 순서대로."""
     n_photo = counts.get("사진", 0)
     out: List[str] = []
     nxt = {k: 1 for k in counts}
-    photo_spots: List[Tuple[int, int]] = []           # (out 안 위치, AI가 쓴 사진 번호)
+    groups: List[Tuple[int, List[int]]] = []          # (out 안 자리 표시 위치, 그 자리에 쓴 사진 번호들)
     for l in lines:
         mm = media_marker(l)
         if not mm:
@@ -215,22 +216,62 @@ def order_media(lines: List[str], counts: Dict[str, int]) -> List[str]:
             continue
         kind, num = mm
         if kind == "사진":
-            if n_photo and 1 <= num <= 99:
-                if photo_spots and photo_spots[-1][0] == len(out) - 1 and out[-1] == "\0사진":
-                    photo_spots[-1] = (photo_spots[-1][0], max(photo_spots[-1][1], num))   # 연속 줄 = 한 묶음
+            if n_photo:
+                if groups and groups[-1][0] == len(out) - 1 and out[-1] == _PH:
+                    groups[-1][1].append(num)          # 연속 줄 = 한 묶음
                 else:
-                    out.append("\0사진")
-                    photo_spots.append((len(out) - 1, num))
+                    out.append(_PH)
+                    groups.append((len(out) - 1, [num]))
             continue
         if nxt.get(kind, 1) > counts.get(kind, 0):
             continue                                   # 올린 개수보다 많은 자리는 버림
         out.append(f"[{kind}:{nxt[kind]}]")
         nxt[kind] += 1
-    out = _place_photos(out, photo_spots, n_photo)
+    placed = _photos_as_written(out, groups, n_photo) if as_written else None
+    if placed is None:                                 # 번호 대신 위치만 쓰고 올린 순서(1, 2, 3…)로 채운다
+        k, seq = 0, []
+        for i, g in groups:
+            k += len(g)
+            seq.append((i, k))
+        placed = _place_photos(out, seq, n_photo)
+    out = placed
     missing = [f"[{k}:{n}]" for k in ("영상", "클립") for n in range(nxt.get(k, 1), counts.get(k, 0) + 1)]
     if missing:
         out = spread_markers(out, missing)
     return out
+
+
+_PH = "\0사진"
+
+
+def _photos_as_written(out: List[str], groups: List[Tuple[int, List[int]]], n: int) -> Optional[List[str]]:
+    nums = [x for _, g in groups for x in g]
+    if not groups or len(set(nums)) != len(nums) or any(not 1 <= x <= n for x in nums):
+        return None
+    if len(nums) < max(1, n // 3):                    # 너무 적게 썼으면 위치 단서만 쓰는 쪽이 고르다
+        return None
+    grp = [list(g) for _, g in groups]
+    for m in range(1, n + 1):
+        if m in nums:
+            continue
+        lower = [x for x in nums if x < m]
+        if lower:
+            target = max(lower)
+            for g in grp:
+                if target in g:
+                    g.insert(g.index(target) + 1, m)
+                    break
+        else:
+            grp[0].insert(0, m)
+        nums.append(m)
+    at = {i: g for (i, _), g in zip(groups, grp)}
+    res: List[str] = []
+    for i, l in enumerate(out):
+        if l == _PH:
+            res.extend(f"[사진:{x}]" for x in at.get(i, []))
+        else:
+            res.append(l)
+    return res
 
 
 def _place_photos(out: List[str], spots: List[Tuple[int, int]], n: int) -> List[str]:
@@ -437,7 +478,7 @@ def _repair_prompt(guide: str, title: str, lines: List[str], missing: List[str])
 [빠진 필수 사항]
 {todo}
 
-- 나머지 문장·[사진:N] 같은 표기·순서는 그대로 두고, 필요한 곳에 자연스럽게 넣거나 문장을 조금 고치세요.
+- 나머지 문장과 [사진:N] 같은 표기의 번호·위치·순서는 그대로 두고, 필요한 곳에 자연스럽게 넣거나 문장을 조금 고치세요.
 - 제목을 고쳐야 하면 title도 고치세요. **, ##, ==, __, > 같은 꾸밈 기호는 쓰지 마세요.
 
 <가이드>
@@ -461,15 +502,24 @@ def _ai_lines(items) -> List[str]:
     return out
 
 
+_ORDER_AI = """- 사진 배치 (가장 중요): 사진을 직접 보고 무엇이 찍혔는지 파악한 뒤, 올린 순서가 아니라 글의 흐름에 맞는 순서로 배치하세요. 사진과 바로 앞뒤 문단의 내용이 반드시 일치해야 합니다.
+  · 제품 후기 흐름: 인사·제품 소개 → 택배·포장 상태 → 개봉 → 구성품 → 디자인·디테일 → 사용 모습·방법 → 사용 후 느낌·결과 → 마무리
+  · 장소(맛집·카페·숙소 등) 흐름: 인사·소개 → 외관·입구 → 내부 분위기 → 메뉴판·가격 → 음식·음료 → 디저트·기타 → 마무리
+  · 첫 사진 묶음은 인사·소개 문단 바로 뒤에, 그 글의 시작에 맞는 사진(제품이면 택배·포장·개봉 사진, 장소면 외관 사진)으로.
+  · 가이드가 사진 순서·위치를 정하면 가이드가 우선입니다."""
+_ORDER_MINE = """- 사진 배치 (가장 중요): 글쓴이가 사진 순서를 직접 정했습니다. 사진은 반드시 1번부터 올린 순서 그대로 차례대로 넣고(번호 순서를 바꾸지 말 것), 사진을 직접 보고 각 사진(묶음) 바로 앞뒤 문단이 그 사진 내용과 일치하도록 글의 흐름을 사진 순서에 맞춰 쓰세요. 첫 사진 앞에는 인사·소개 문단을 쓰세요."""
+
+
 # ── 가이드 원고 생성 ──
 
 def _prompt(guide: str, notes: str, brand: str, photo_descs: List[str], n_videos: int, clip_titles: List[str],
-            min_chars: int) -> str:
+            min_chars: int, keep_order: bool = False) -> str:
     photos = "\n".join(f"- 사진 {i}: {d or '(설명 없음)'}" for i, d in enumerate(photo_descs, 1))
     clips = "\n".join(f"- 클립 {i}: {t}" for i, t in enumerate(clip_titles, 1))
     media = ""
     if photo_descs:
-        media += f"\n[올린 사진 {len(photo_descs)}장 - 올린 순서]\n{photos}\n"
+        media += (f"\n[올린 사진 {len(photo_descs)}장 - 번호는 올린 순서. 첨부 이미지도 사진 1번부터 같은 순서이니 실제 사진을 직접 보고 판단하세요]\n"
+                  f"{photos}\n")
     if n_videos:
         media += f"\n[올린 영상 {n_videos}개]\n"
     if clip_titles:
@@ -508,8 +558,9 @@ def _prompt(guide: str, notes: str, brand: str, photo_descs: List[str], n_videos
 - 그 밖에 줄 하나로: [구분선], [스티커], [지도:가게·장소 이름](가이드가 지도·위치 삽입을 원하면, 가이드에 나온 상호명 그대로), [링크:https://주소](가이드에 링크가 있으면 그 주소 그대로).
 - 지도 줄 아래에 주소·전화번호를 따로 쓰지 마세요 (가이드에 주소가 있을 때만 가이드 그대로).
 - 모든 표기는 반각 문자로 정확히 쓰세요 (예: [사진:1]). 전각 숫자·괄호를 쓰지 마세요.
-- 사진 자리: "[사진:번호]" 한 줄에 하나. 올린 사진을 1번부터 마지막 번호까지 올린 순서 그대로 빠짐없이 한 번씩 넣으세요(번호를 건너뛰거나 순서를 바꾸지 말 것).
-- 사진이 많으면(8장 이상) 내용이 같은 사진끼리 2~4장을 연달아 묶어 한 자리에 넣고(예: "[사진:3]" "[사진:4]" "[사진:5]" 를 연속 줄로), 그 묶음 바로 앞뒤 문단은 그 사진들의 내용과 맞게 쓰세요. 묶음은 글 처음부터 끝까지 고르게 나누고, 앞쪽에 1장씩 넣다가 남은 사진을 글 끝에 몰아넣지 마세요. 사진 설명 문장을 그대로 옮기지는 마세요.
+- 사진 자리: "[사진:번호]" 한 줄에 하나. 모든 사진을 빠짐없이 딱 한 번씩 넣으세요.
+{_ORDER_MINE if keep_order else _ORDER_AI}
+- 사진이 많으면(8장 이상) 같은 내용의 사진 2~4장을 연달아 묶어 한 자리에 넣고(예: "[사진:7]" "[사진:3]" "[사진:12]" 를 연속 줄로), 그 묶음 앞뒤 문단은 그 사진들의 내용을 이야기하세요. 묶음은 글 처음부터 끝까지 고르게 나누고, 남은 사진을 글 끝에 몰아넣지 마세요. 사진 설명 문장을 그대로 옮기지는 마세요.
 - 영상 자리: "[영상:번호]", 클립 자리: "[클립:번호]" 한 줄씩. 1번부터 차례대로 모두 한 번씩, 가이드가 위치를 정하면 그 위치에.
 - 위 표기([사진:N], [인용:...] 등 대괄호 표기) 말고 다른 표기는 쓰지 마세요.
 - 본문 마지막 줄은 해시태그 한 줄(예: "#태그1 #태그2 ...")로 끝내세요. tags와 같은 태그.
@@ -528,7 +579,7 @@ def _prompt(guide: str, notes: str, brand: str, photo_descs: List[str], n_videos
 def _expand_prompt(guide: str, title: str, lines: List[str], need: int) -> str:
     body = "\n".join(lines)
     return f"""아래 블로그 원고는 공백 제외 {need:,}자보다 짧습니다. 가이드를 지키면서 공백 제외 {need:,}자 이상이 되도록 늘려 주세요.
-- 기존 문장·표기([사진:N], [영상:N], [클립:N] 등)와 순서는 그대로 두고, 문단을 보충하거나 소제목 아래 내용을 더 쓰세요.
+- 기존 문장·표기([사진:N], [영상:N], [클립:N] 등)와 그 번호·위치·순서는 그대로 두고, 문단을 보충하거나 소제목 아래 내용을 더 쓰세요.
 - **, ##, ==, __, > 같은 꾸밈 기호는 쓰지 마세요. 이모지는 적당히 써도 됩니다.
 - 가이드·원고에 없는 수치·효과·가격을 지어내지 마세요.
 
@@ -544,9 +595,25 @@ def _expand_prompt(guide: str, title: str, lines: List[str], need: int) -> str:
 JSON으로만 답하세요: {{"contents": ["..."]}}"""
 
 
+def _photo_images(paths: List[str], limit: int = 30) -> List[Tuple[str, str]]:
+    """사진 → AI에 보낼 작은 JPEG (base64). 실패한 사진은 건너뛰지 않고 빈 자리 없이 순서 유지가 어려우므로 전체를 포기."""
+    import base64
+    import io
+    from PIL import Image, ImageOps
+    out = []
+    for p in paths[:limit]:
+        im = ImageOps.exif_transpose(Image.open(p)).convert("RGB")
+        im.thumbnail((448, 448))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=70)
+        out.append(("image/jpeg", base64.b64encode(buf.getvalue()).decode()))
+    return out
+
+
 def generate_from_guide(guide: str, api_key: str, notes: str = "", brand: str = "",
                         photo_descs: Optional[List[str]] = None, n_videos: int = 0,
-                        clip_titles: Optional[List[str]] = None, min_chars: int = MIN_GUIDE_CHARS
+                        clip_titles: Optional[List[str]] = None, min_chars: int = MIN_GUIDE_CHARS,
+                        photo_paths: Optional[List[str]] = None, keep_order: bool = False
                         ) -> Tuple[str, List[str], List[str], List[str]]:
     """가이드 → (제목, 본문 줄, 해시태그, 가이드 반영 체크리스트)."""
     import gemini_client
@@ -563,10 +630,18 @@ def generate_from_guide(guide: str, api_key: str, notes: str = "", brand: str = 
         d = gemini_client.extract_json(text)
         return d if isinstance(d, dict) and d.get("contents") else None
 
+    images = []
+    if photo_paths and len(photo_paths) == len(photo_descs):
+        try:                                              # 사진을 직접 보고 글·사진을 맞추게 한다
+            images = _photo_images(photo_paths)
+        except Exception as e:
+            logger.warning(f"사진 첨부 실패 → 사진 설명만 사용: {e}")
+            images = []
     data, model = gemini_client.generate(
         api_key.strip(), _prompt(guide, (notes or "").strip()[:MAX_NOTES], (brand or "").strip()[:100],
-                                 photo_descs, n_videos, clip_titles, min_chars),
-        WRITER_MODELS, generation_config={"temperature": 0.7, "maxOutputTokens": 12000}, timeout=40, accept=accept)
+                                 photo_descs, n_videos, clip_titles, min_chars, keep_order),
+        WRITER_MODELS, generation_config={"temperature": 0.7, "maxOutputTokens": 12000},
+        timeout=90 if images else 40, accept=accept, images=images)
     logger.info(f"📝 체험단 가이드 원고 생성 ({model})")
     title = re.sub(r"\s+", " ", str(data.get("title") or "")).strip()[:100]
     lines = _ai_lines(data.get("contents"))
@@ -613,7 +688,7 @@ def generate_from_guide(guide: str, api_key: str, notes: str = "", brand: str = 
         checklist.append("⚠️ 확인 필요: " + m)
     if not tags:                      # 태그는 꼭 넣는다 (가이드에 없고 AI도 안 줬으면 제목 단어로)
         tags = merge_tags([w for w in re.split(r"[\s,·]+", re.sub(r"[^\w\s가-힣]", " ", title)) if len(w) >= 2])[:10]
-    lines = order_media(lines, {"사진": len(photo_descs), "영상": n_videos, "클립": len(clip_titles)})
+    lines = order_media(lines, {"사진": len(photo_descs), "영상": n_videos, "클립": len(clip_titles)}, as_written=not keep_order)
     lines = _tidy(lines)
     if tags:                          # 원고 맨 끝에 태그 줄 (발행 때도 글 맨 끝에 들어간다)
         lines += ["", " ".join("#" + t for t in tags)]

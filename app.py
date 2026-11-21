@@ -1919,13 +1919,20 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <div class="card">
           <div class="card-title"><span>📷 사진·🎬 영상·🎞 클립</span></div>
           <div class="form-group">
-            <label>사진 <span style="font-weight:400; color:var(--text-muted);">(최대 30장, 올린 순서대로 원고에 들어갑니다)</span></label>
+            <label>사진 <span style="font-weight:400; color:var(--text-muted);">(최대 30장 · 목록의 1번 사진이 원고의 [사진:1] 자리에 · 끌어서 놓거나 ▲▼로 순서 변경)</span></label>
+            <div style="display:flex;gap:6px;align-items:center;font-size:12.5px;margin:2px 0 6px;">
+              <span style="font-weight:600;">AI 원고의 사진 순서</span>
+              <select id="rv_photo_order" style="width:auto;padding:4px 8px;font-size:12.5px;">
+                <option value="ai" selected>AI가 사진을 보고 글 흐름에 맞게 (택배·개봉 → 사용 → 마무리)</option>
+                <option value="mine">내가 정한 목록 순서 그대로</option>
+              </select>
+            </div>
             <input type="file" id="rv_photo_input" accept="image/*" multiple style="display:none;" onchange="addReviewPhotos(this.files); this.value='';">
             <button type="button" class="btn-outline" style="width:100%;" onclick="document.getElementById('rv_photo_input').click()">사진 올리기</button>
             <div id="rv-photos" class="rv-media-list"></div>
           </div>
           <div class="form-group">
-            <label>영상 <span style="font-weight:400; color:var(--text-muted);">(최대 10개, 4GB 이하)</span></label>
+            <label>영상 <span style="font-weight:400; color:var(--text-muted);">(최대 10개, 4GB 이하 · 끌어서 놓거나 ▲▼로 순서 변경)</span></label>
             <input type="file" id="rv_video_input" accept="video/*,.mp4,.mov,.m4v,.avi,.wmv,.mkv,.webm" multiple style="display:none;" onchange="addReviewVideos(this.files); this.value='';">
             <button type="button" class="btn-outline" style="width:100%;" onclick="document.getElementById('rv_video_input').click()">영상 올리기</button>
             <div id="rv-videos" class="rv-media-list"></div>
@@ -2006,7 +2013,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
               <button type="button" onclick="rvInsertLine('[스티커]')">스티커</button>
               <button type="button" onclick="const q = prompt('지도에서 찾을 가게·장소 이름 (비우면 [AI 블로그 자동 발행] 탭의 지도 검색어)', document.getElementById('rv_brand').value || ''); if (q !== null) rvInsertLine(q.trim() ? '[지도:' + q.trim().slice(0, 60) + ']' : '[지도]');">지도</button>
             </div>
-            <textarea id="rv_content" rows="22" oninput="rvCount()" placeholder="본문. **굵게** ==형광펜== __밑줄__ {{빨강:글자색}} / ## 소제목 / > 인용구 / [사진:1] [영상:1] [클립:1] [구분선] [스티커] [지도:가게 이름] [링크:https://주소]"></textarea>
+            <textarea id="rv_content" rows="22" oninput="rvCount()" placeholder="본문. 📍 소제목 / [인용:한 줄] / [사진:1] [영상:1] [클립:1] [구분선] [스티커] [지도:가게 이름] [링크:https://주소]"></textarea>
           </div>
           <div class="form-group">
             <label>해시태그 <span style="font-weight:400; color:var(--text-muted);">(쉼표나 띄어쓰기로 구분, 최대 30개)</span></label>
@@ -3910,7 +3917,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     // 사진
     function renderReviewPhotos() {
       const box = document.getElementById('rv-photos');
-      box.innerHTML = rvPhotos.map((p, i) => `<div class="rv-item">`
+      box.innerHTML = rvPhotos.map((p, i) => `<div class="rv-item" ${rvDragAttrs('사진', i)}>`
         + `<b class="rv-num">${i + 1}</b>`
         + (p.thumb ? `<img src="${p.thumb}">` : '<span class="rv-ph">📷</span>')
         + `<span class="rv-name">${esc(p.name)}<br><small>${p.state === 'up' ? '올리는 중...' : p.state === 'err' ? '<span style="color:#dc2626;">' + esc(p.msg) + '</span>' : '올림'}</small></span>`
@@ -3952,6 +3959,37 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         .map(l => { const m = l.trim().match(re); return m && map[+m[1]] ? `[${kind}:${map[+m[1]]}]` : l; }).join('\n');
       rvCount();
     }
+    // 끌어서 놓기로 순서 바꾸기 (목록 순서 = 원고의 [사진:N]·[영상:N] 번호)
+    let rvDrag = null;
+    function rvDragAttrs(kind, i) {
+      return `draggable="true" title="끌어서 순서 바꾸기" style="cursor:grab;" ondragstart="rvDrag={kind:'${kind}',i:${i}}; event.dataTransfer.effectAllowed='move';"`
+        + ` ondragover="event.preventDefault(); this.style.outline='2px dashed #6366f1';" ondragleave="this.style.outline='';"`
+        + ` ondrop="event.preventDefault(); this.style.outline=''; rvDropOn('${kind}', ${i});" ondragend="rvDrag=null;"`;
+    }
+    function rvDropOn(kind, to) {
+      if (!rvDrag || rvDrag.kind !== kind || rvDrag.i === to) return;
+      const arr = kind === '사진' ? rvPhotos : rvVideos;
+      const [it] = arr.splice(rvDrag.i, 1);
+      arr.splice(to, 0, it);
+      rvDrag = null;
+      kind === '사진' ? renderReviewPhotos() : renderReviewVideos();
+      if (typeof renderClipScenes === 'function' && clipScenes.length) renderClipScenes();
+    }
+    // AI가 글 흐름대로 고른 사진 순서를 목록에 반영: 본문에 나온 순서대로 목록을 다시 줄 세우고 번호를 1, 2, 3… 으로
+    function rvSyncPhotoOrder() {
+      const ta = document.getElementById('rv_content');
+      const re = /^\[사진:\s*(\d{1,2})\]$/;
+      const seq = [];
+      ta.value.split('\n').forEach(l => { const m = l.trim().match(re); if (m && !seq.includes(+m[1]) && +m[1] <= rvPhotos.length) seq.push(+m[1]); });
+      if (!seq.length || seq.every((n, i) => n === i + 1)) return;
+      rvPhotos.forEach((_, i) => { if (!seq.includes(i + 1)) seq.push(i + 1); });
+      const map = {};
+      seq.forEach((old, i) => { map[old] = i + 1; });
+      const reordered = seq.map(n => rvPhotos[n - 1]);
+      rvPhotos.splice(0, rvPhotos.length, ...reordered);
+      ta.value = ta.value.split('\n').map(l => { const m = l.trim().match(re); return m && map[+m[1]] ? `[사진:${map[+m[1]]}]` : l; }).join('\n');
+      renderReviewPhotos();
+    }
     function rvMove(arr, i, d, render, kind) {
       const j = i + d;
       if (j < 0 || j >= arr.length) return;
@@ -3972,7 +4010,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     // 영상
     function renderReviewVideos() {
       const box = document.getElementById('rv-videos');
-      box.innerHTML = rvVideos.map((v, i) => `<div class="rv-item">`
+      box.innerHTML = rvVideos.map((v, i) => `<div class="rv-item" ${rvDragAttrs('영상', i)}>`
         + `<b class="rv-num">${i + 1}</b><span class="rv-ph">🎬</span>`
         + `<span class="rv-name">${esc(v.name)}<br><small>${v.state === 'up' ? `올리는 중 ${v.pct}%` : v.state === 'err' ? '<span style="color:#dc2626;">' + esc(v.msg) + '</span>' : '올림'}</small>`
         + `<input type="text" maxlength="40" placeholder="영상 제목 (40자)" value="${esc(v.title)}" oninput="rvVideos[${i}].title=this.value"></span>`
@@ -4072,9 +4110,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       btn.disabled = true; btn.innerText = '⏳ 가이드를 읽고 원고를 쓰는 중... (1~2분)';
       try {
         const d = await postJSON('/api/review/draft', {
-          guide, brand: document.getElementById('rv_brand').value.trim(), notes: document.getElementById('rv_notes').value.trim(), ...media });
+          guide, brand: document.getElementById('rv_brand').value.trim(), notes: document.getElementById('rv_notes').value.trim(), ...media,
+          photo_order: document.getElementById('rv_photo_order').value });
         document.getElementById('rv_title').value = d.title || '';
         document.getElementById('rv_content').value = (d.contents || []).join('\n');
+        rvSyncPhotoOrder();
         document.getElementById('rv_tags').value = (d.tags || []).join(', ');
         const cl = document.getElementById('rv-checklist');
         cl.style.display = (d.checklist || []).length ? 'block' : 'none';
@@ -5688,7 +5728,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 title, lines, tags, checklist = review_post.generate_from_guide(
                     guide, key, notes=notes, brand=brand, photo_descs=descs, n_videos=n_videos,
-                    clip_titles=[c["title"] for _, c in sorted(clips.items())])
+                    clip_titles=[c["title"] for _, c in sorted(clips.items())],
+                    photo_paths=[path for _, path in photos], keep_order=payload.get("photo_order") == "mine")
             except Exception as e:
                 logger.warning(f"체험단 가이드 원고 생성 실패: {e}")
                 return self._send_json({"ok": False, "message": str(e)}, 400)
