@@ -2013,7 +2013,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             <input type="text" id="rv_tags" placeholder="예) 송도카페, 송도맛집">
           </div>
           <div style="display:flex; flex-wrap:wrap; gap:14px; align-items:center; font-size:13px; margin-bottom:10px;">
-            <label style="display:flex; align-items:center; gap:6px; margin:0;"><input type="checkbox" id="rv_center" style="width:auto; margin:0;"> 글 전체 가운데 정렬</label>
+            <label style="display:flex; align-items:center; gap:6px; margin:0;"><input type="checkbox" id="rv_center" checked style="width:auto; margin:0;"> 글 전체 가운데 정렬</label>
             <label style="display:flex; align-items:center; gap:6px; margin:0;"><input type="checkbox" id="rv_public" checked style="width:auto; margin:0;"> 전체 공개</label>
             <label style="display:flex; align-items:center; gap:6px; margin:0;">예약 <input type="datetime-local" id="rv_schedule" step="600" style="width:auto; padding:4px 6px;"></label>
           </div>
