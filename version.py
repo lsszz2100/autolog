@@ -1,7 +1,7 @@
 """프로그램 버전·업데이트 배포처 (단일 기준). packaging\\release.bat 이 이 값을 읽어 빌드·배포한다."""
-APP_VERSION = "1.0.54"
+APP_VERSION = "1.0.55"
 # 화면에 보이는 버전. 라이선스 업데이트처럼 버전을 바꾸지 않는 배포는 APP_VERSION(내부 번호)만 올리고 이 값은 그대로 둔다
-DISPLAY_VERSION = "1.0.28"
+DISPLAY_VERSION = "1.0.29"
 # 판매용 제품 이름 (화면·창 제목·설치 프로그램에 표시). 내부 폴더·파일 이름(NaverBlogStudio)은 업데이트 호환 때문에 그대로
 PRODUCT_NAME = "오토로그"
 PRODUCT_NAME_EN = "AutoLog"

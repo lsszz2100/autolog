@@ -13,6 +13,7 @@
 """
 import logging
 import re
+import time
 from typing import Dict, List, Optional, Tuple
 
 _PORTAL = "\ub124\uc774\ubc84"  # 포털 이름(한글), 소스에 상표명을 직접 쓰지 않음
@@ -31,8 +32,9 @@ COLORS = {
 }
 HIGHLIGHT = "#fff593"           # ==형광펜== 배경색
 DISCLOSURE_COLOR = "#8a8a8a"    # 대가성(협찬·제품 제공) 문구: 연한 회색
-DISCLOSURE_PX = 13              # 대가성 문구 글자 크기 (본문 16보다 작게)
+DISCLOSURE_PX = 15              # 대가성(공정위) 문구 글자 크기 (본문 16보다 조금 작게)
 DISCLOSURE_GAP = 3              # 대가성 문구 뒤 빈 줄 수
+DEFAULT_DISCLOSURE = "업체로부터 제품(서비스)을 제공받아 작성한 솔직한 후기입니다."
 MEDIA_GAP = 1                   # 사진·영상·클립과 글 사이 빈 줄 수
 
 MEDIA_RE = re.compile(r"^\[(사진|영상|클립):\s*(\d{1,2})\]$")
@@ -455,12 +457,15 @@ def guide_requirements(guide: str) -> Dict:
             continue
         quoted = re.findall(r"[\'\"‘“「『]([^\'\"’”」』]{2,120})[\'\"’”」』]", body)
         if re.search(r"(문구|멘트|문장|고지)", head):
-            req["phrases"] += quoted or ([re.sub(r"\s*\(.*?\)\s*$", "", body)] if len(body) >= 8 else [])
+            if quoted:
+                req["phrases"] += quoted
+            elif len(body) >= 8 and not is_instruction(body):
+                req["phrases"].append(re.sub(r"\s*\(.*?\)\s*$", "", body))
             continue
         if re.search(r"키워드", head):
             n = re.search(r"(\d+)\s*회", body)
             times = int(n.group(1)) if n else 1
-            words = quoted or re.split(r"[,/·]|\s{2,}", re.sub(r"\([^)]*\)", "", body))
+            words = quoted or re.split(r"[,/·]|\s{2,}", re.sub(r"\d+\s*회\s*(이상)?", "", re.sub(r"\([^)]*\)", "", body)))
             for w in words:
                 w = w.strip().strip(".")
                 if 1 < len(w) <= 25:
@@ -475,6 +480,62 @@ def guide_requirements(guide: str) -> Dict:
 
 def _nospace(t: str) -> str:
     return re.sub(r"\s+", "", t or "")
+
+
+_INSTR_RE = re.compile(
+    r"(부탁\s*드|부탁합니다|바랍니다|해\s*주세요|해주세요|주시기|주십시오|기재|명시|표기해|삽입해|첨부해|넣어\s*주|작성해|작성\s*시|"
+    r"필수|금지|지양|지침|가이드|포스팅\s*(상단|하단|맨)|원고\s*(상단|하단)|상단에|하단에|업로드\s*후|발행\s*후|URL\s*전달|링크\s*전달|"
+    r"\d+\s*(장|자)\s*이상|\d+\s*회\s*이상\s*(넣|언급|노출|작성)|이상\s*(첨부|작성))")
+
+
+def is_instruction(line: str) -> bool:
+    """가이드에서 작성자에게 하는 지시·부탁 문장 (원고에 옮겨 적으면 안 되는 것). 공정위(대가) 문구 자체는 제외."""
+    t = plain_text(line or "").strip()
+    if not t or is_disclosure(t):
+        return False
+    return bool(_INSTR_RE.search(t))
+
+
+def drop_copied_instructions(lines: List[str], guide: str) -> List[str]:
+    """원고에 가이드의 지시문을 그대로 옮겨 적은 줄을 뺀다 (가이드에 있는 문장 + 지시 말투일 때만)."""
+    g = _nospace(guide)
+    out = []
+    for l in lines:
+        t = _nospace(plain_text(l))
+        if len(t) >= 10 and not media_marker(l) and is_instruction(l) and (t in g or (len(t) >= 30 and t[:25] in g)):
+            logger.info(f"📝 가이드 지시문을 원고에서 뺐습니다: {plain_text(l)[:60]}")
+            continue
+        out.append(l)
+    return out
+
+
+def disclosure_on_top(lines: List[str], req: Optional[Dict] = None) -> List[str]:
+    """공정위(대가) 문구를 원고 맨 위로, 그 뒤 빈 줄 DISCLOSURE_GAP개. 없으면 가이드 문구 또는 기본 문장을 넣는다."""
+    lines = list(lines)
+    idx = next((i for i, l in enumerate(lines) if is_disclosure(l)), None)
+    if idx is not None:
+        top = lines.pop(idx).strip()
+    else:
+        top = next((p for p in (req or {}).get("phrases") or [] if is_disclosure(p)), DEFAULT_DISCLOSURE)
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return [top] + [""] * DISCLOSURE_GAP + lines
+
+
+def space_media(lines: List[str]) -> List[str]:
+    """사진·영상·클립 묶음 앞뒤에 빈 줄 하나 (원고 화면에서도 간격이 보이게)."""
+    out: List[str] = []
+    for i, l in enumerate(lines):
+        is_m = bool(media_marker(l))
+        prev_m = bool(out and media_marker(out[-1]))
+        if is_m and out and out[-1].strip() and not prev_m:
+            out.append("")
+        elif not is_m and l.strip() and prev_m:
+            out.append("")
+        out.append(l)
+    return out
 
 
 def missing_requirements(title: str, lines: List[str], req: Dict) -> List[str]:
@@ -563,12 +624,16 @@ def _prompt(guide: str, notes: str, brand: str, photo_descs: List[str], n_videos
 ''' if notes else ''}{media}
 [가이드 해석·반영 규칙 - 가장 중요]
 0. 무조건 가이드대로 쓰세요. 가이드 지시와 아래 규칙이 부딪히면 가이드가 우선입니다(단, 꾸밈 기호 금지는 지킬 것).
+0-1. 가이드는 '작성자에게 주는 지시'입니다. 지시 문장은 원고에 옮겨 적지 말고, 해석해서 실제로 실행하세요.
+   예) "관련 지침 변경으로 공정위 문구는 포스팅 상단에 기재 부탁드립니다" → 이 문장은 쓰지 말고, 공정위(대가 표시) 문구를 본문 맨 첫 줄에 넣는다.
+   예) "사진 15장 이상 첨부해 주세요", "키워드 3회 이상 넣어 주세요", "업로드 후 URL 전달" → 원고에 쓰지 않고 그대로 지킨다.
+   원고에는 블로그 독자가 읽을 문장만 쓰세요. 가이드에 따옴표로 정해 준 문구(공정위 문구·필수 멘트)만 그 문장 그대로 넣습니다.
 1. 가이드에 있는 필수 사항을 하나도 빠뜨리지 마세요: 제목에 넣을 키워드, 본문 필수 키워드(횟수 지정이 있으면 그 횟수), 꼭 넣을 문구(대가 표시·협찬 문구·체험단 문구 등은 가이드 문장 그대로), 소개할 특징·장점, 가격·위치·영업시간 같은 정보, 링크·지도 삽입 요청, 사진·영상 위치 요청, 글 구성 순서.
 2. 가이드의 금지 사항(쓰면 안 되는 표현·비교·과장)은 절대 쓰지 마세요.
 3. 가이드에 해시태그·태그가 있으면 하나도 빼지 말고 전부 그대로 tags에 넣고(가이드 태그가 먼저), 모자라면 내용에 맞는 태그를 더해 10~15개를 채우세요. 가이드에 태그가 없어도 10~15개를 꼭 만드세요.
-4. 대가(협찬·제품 제공·원고료) 표시 문구가 가이드에 있으면 그 문장 그대로, 없으면 "업체로부터 제품(서비스)을 제공받아 작성한 솔직한 후기입니다." 같은 문장을 본문 맨 첫 줄에 넣으세요. 가이드가 끝에도 넣으라고 하면 끝에도 넣으세요.
+4. 대가(협찬·제품 제공·원고료) 표시 문구가 가이드에 있으면 그 문장 그대로, 없으면 "업체로부터 제품(서비스)을 제공받아 작성한 솔직한 후기입니다." 같은 문장을 본문 맨 첫 줄에 넣고, 그 뒤에 빈 줄을 3개 두세요. 가이드가 끝에도 넣으라고 하면 끝에도 넣으세요.
 5. 가이드·메모·사진에 없는 사실을 지어내지 마세요: 수치·기간·효과·가격·주소·전화번호, 직원·사장님의 응대, 다른 손님 모습, 날씨, 함께 간 사람, 재방문 여부 같은 겪은 일. 확인되지 않은 효능을 단정하지 마세요. 체험 소감은 가이드·메모·사진에 근거한 범위에서 1인칭으로 자연스럽게 쓰고, 분량은 가이드에 있는 특징을 더 자세히 풀어 설명해서 채우세요.
-6. 본문 분량은 반드시 공백 제외 {min_chars:,}자 이상입니다. 가이드가 더 길게 요구하면 그 분량을 따르세요.
+6. 본문 분량은 공백 제외 {min_chars + 500:,}자 안팎으로 쓰세요(최소 {min_chars:,}자, 짧으면 다시 써야 합니다). 소제목 4~6개마다 2~4문단씩, 가이드의 특징·장점·사용법·느낌을 자세히 풀어 쓰면 됩니다. 가이드가 더 길게 요구하면 그 분량을 따르세요.
 7. 말투·문체는 가이드가 정하면 그대로, 정하지 않으면 친근한 블로그 존댓말로 쓰세요.
 
 [꾸밈 표기 - 가이드가 원하는 꾸밈을 아래 표기로 넣으세요]
@@ -600,10 +665,14 @@ def _prompt(guide: str, notes: str, brand: str, photo_descs: List[str], n_videos
 
 def _expand_prompt(guide: str, title: str, lines: List[str], need: int) -> str:
     body = "\n".join(lines)
-    return f"""아래 블로그 원고는 공백 제외 {need:,}자보다 짧습니다. 가이드를 지키면서 공백 제외 {need:,}자 이상이 되도록 늘려 주세요.
-- 기존 문장·표기([사진:N], [영상:N], [클립:N] 등)와 그 번호·위치·순서는 그대로 두고, 문단을 보충하거나 소제목 아래 내용을 더 쓰세요.
-- **, ##, ==, __, > 같은 꾸밈 기호는 쓰지 마세요. 이모지는 적당히 써도 됩니다.
-- 가이드·원고에 없는 수치·효과·가격을 지어내지 마세요.
+    have = body_chars(lines)
+    add = max(need - have + 250, 400)
+    return f"""아래 블로그 원고가 공백 제외 {have:,}자라 {need:,}자보다 짧습니다. 원고 마무리 앞에 넣을 내용을 새로 써 주세요.
+- 공백 제외 {add:,}자 이상. 소제목 1~2개(기호 없이 이모지로 시작하는 짧은 한 줄)와 그 아래 문단 여러 개.
+- 원고에 이미 있는 문장을 되풀이하지 말고, 가이드의 특징·장점·사용법·추천 대상·느낌을 더 자세히 풀어 쓰세요.
+- 가이드의 지시 문장(…해 주세요, …기재 부탁드립니다 등)은 옮겨 적지 마세요.
+- **, ##, ==, __, > 같은 꾸밈 기호, [사진:N] 같은 표기, 해시태그는 쓰지 마세요. 이모지는 적당히 써도 됩니다.
+- 가이드·원고에 없는 수치·효과·가격·겪은 일을 지어내지 마세요.
 
 <가이드>
 {guide[:6000]}
@@ -614,7 +683,16 @@ def _expand_prompt(guide: str, title: str, lines: List[str], need: int) -> str:
 {body}
 </원고>
 
-JSON으로만 답하세요: {{"contents": ["..."]}}"""
+JSON으로만 답하세요: {{"more": ["📍 소제목", "", "문단", "", "문단"]}}"""
+
+
+def _insert_more(lines: List[str], more: List[str]) -> List[str]:
+    """추가 문단을 마무리(마지막 소제목) 앞에, 소제목이 없으면 마지막 문단 앞에 넣는다."""
+    heads = [i for i, l in enumerate(lines) if l.strip() and (is_heading(l) or emoji_heading(l))]
+    at = heads[-1] if heads and heads[-1] > len(lines) // 2 else None
+    if at is None:
+        at = max((i for i, l in enumerate(lines) if l.strip() and not media_marker(l) and not is_quote(l)), default=len(lines))
+    return lines[:at] + more + [""] + lines[at:]
 
 
 def _photo_images(paths: List[str], limit: int = 30) -> List[Tuple[str, str]]:
@@ -675,22 +753,24 @@ def generate_from_guide(guide: str, api_key: str, notes: str = "", brand: str = 
     tags = merge_tags(req["hashtags"], [str(t) for t in data.get("tags") or []], body_tags)
     checklist = [str(c)[:200] for c in data.get("checklist") or []][:20]
 
-    for _ in range(3):
+    lines = drop_copied_instructions(lines, guide)
+    accept_more = lambda text: (lambda d: d if isinstance(d, dict) and d.get("more") else None)(gemini_client.extract_json(text))
+    for attempt in range(3):
         if body_chars(lines) >= min_chars:
             break
-        logger.info(f"📝 분량 보충: {body_chars(lines):,}자 → {min_chars:,}자 이상")
+        logger.info(f"📝 분량 보충: {body_chars(lines):,}자 → {min_chars:,}자 이상 ({attempt + 1}/3)")
         try:
             more, _m = gemini_client.generate(api_key.strip(), _expand_prompt(guide, title, lines, min_chars),
-                                              WRITER_MODELS, generation_config={"temperature": 0.6, "maxOutputTokens": 12000},
-                                              timeout=40, accept=accept)
-            new = _ai_lines(more.get("contents"))
-            new, more_tags = split_hashtags(new)
-            if body_chars(new) > body_chars(lines):
-                lines = new
-                tags = merge_tags(tags, more_tags)
+                                              WRITER_MODELS, generation_config={"temperature": 0.7, "maxOutputTokens": 6000},
+                                              timeout=60, accept=accept_more)
+            add = drop_copied_instructions(
+                [l for l in _ai_lines(more.get("more")) if not media_marker(l) and not l.strip().startswith("#")], guide)
+            if body_chars(add) > 0:
+                lines = _insert_more(lines, add)
         except Exception as e:
             logger.warning(f"분량 보충 실패: {e}")
-            break
+            if attempt < 2:
+                time.sleep(20)                    # 분당 한도(429)면 잠시 뒤 다시
     missing = missing_requirements(title, lines, req)
     if missing:                       # 가이드 필수 사항이 빠졌으면 한 번 더 고쳐 쓰게 한다
         logger.info(f"📝 가이드 필수 사항 보완: {missing}")
@@ -710,8 +790,12 @@ def generate_from_guide(guide: str, api_key: str, notes: str = "", brand: str = 
         checklist.append("⚠️ 확인 필요: " + m)
     if not tags:                      # 태그는 꼭 넣는다 (가이드에 없고 AI도 안 줬으면 제목 단어로)
         tags = merge_tags([w for w in re.split(r"[\s,·]+", re.sub(r"[^\w\s가-힣]", " ", title)) if len(w) >= 2])[:10]
+    if body_chars(lines) < min_chars:
+        checklist.append(f"⚠️ 분량 {body_chars(lines):,}자 — {min_chars:,}자 미달 (AI 사용량 한도일 수 있어요. 잠시 뒤 다시 만들거나 직접 보충해 주세요)")
+    lines = drop_copied_instructions(lines, guide)
     lines = order_media(lines, {"사진": len(photo_descs), "영상": n_videos, "클립": len(clip_titles)}, as_written=not keep_order)
-    lines = _tidy(lines)
+    lines = space_media(_tidy(lines))
+    lines = disclosure_on_top(lines, req)
     if tags:                          # 원고 맨 끝에 태그 줄 (발행 때도 글 맨 끝에 들어간다)
         lines += ["", " ".join("#" + t for t in tags)]
     return title, lines, tags, checklist
