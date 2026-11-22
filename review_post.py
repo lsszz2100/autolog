@@ -30,6 +30,10 @@ COLORS = {
     "회색": "#777777", "검정": "#000000",
 }
 HIGHLIGHT = "#fff593"           # ==형광펜== 배경색
+DISCLOSURE_COLOR = "#8a8a8a"    # 대가성(협찬·제품 제공) 문구: 연한 회색
+DISCLOSURE_PX = 13              # 대가성 문구 글자 크기 (본문 16보다 작게)
+DISCLOSURE_GAP = 3              # 대가성 문구 뒤 빈 줄 수
+MEDIA_GAP = 1                   # 사진·영상·클립과 글 사이 빈 줄 수
 
 MEDIA_RE = re.compile(r"^\[(사진|영상|클립):\s*(\d{1,2})\]$")
 LINK_RE = re.compile(r"^\[링크:\s*(https?://\S+)\]$")
@@ -113,13 +117,31 @@ def parse_inline(line: str) -> List[Tuple[str, Dict]]:
     return merged
 
 
+_DISC_GIVE = re.compile(r"제공\s*받|지원\s*받|원고료|협찬|소정의|대가|체험단")
+_DISC_POST = re.compile(r"작성|후기|포스팅|리뷰|게시")
+
+
+def is_disclosure(line: str) -> bool:
+    """'업체로부터 제품을 제공받아 작성한 솔직한 후기입니다' 같은 대가성 표시 문구 한 줄."""
+    s = (line or "").strip()
+    if not s or is_heading(s) or is_quote(s) or is_special(s) or s.startswith("#"):
+        return False
+    t = plain_text(s)
+    return len(t) <= 150 and bool(_DISC_GIVE.search(t)) and bool(_DISC_POST.search(t))
+
+
 def line_html(line: str, heading_px: int = 24, body_px: int = 16, center: bool = False) -> str:
-    """한 줄 → 에디터에 붙여넣을 HTML 문단 (굵게·밑줄·형광펜·글자색·소제목 크기·정렬)."""
+    """한 줄 → 에디터에 붙여넣을 HTML 문단 (굵게·밑줄·형광펜·글자색·소제목 크기·정렬).
+    대가성 문구는 연한 회색·작은 글씨로 (본문·소제목 서식은 그대로)."""
     import html as _h
     s = (line or "").rstrip()
     align = ' style="text-align:center"' if center else ""
     if not s.strip():
         return f"<p{align}><br></p>"
+    if is_disclosure(s):
+        t = _h.escape(plain_text(s).strip())
+        return (f'<p{align}><span style="font-size:{DISCLOSURE_PX}px">'
+                f'<span style="color:{DISCLOSURE_COLOR}">{t}</span></span></p>')
     heading = is_heading(s)
     body = s.strip()[3:] if heading else s
     heading = heading or emoji_heading(s)
@@ -716,16 +738,27 @@ def prepare_direct(content: str, counts: Dict[str, int]) -> Tuple[List[str], Lis
 
 # ── 발행 블록 ──
 
-def build_blocks(lines: List[str], photos: Dict[int, str], videos: Dict[int, Dict], clips: Dict[int, Dict]) -> List[Dict]:
-    """본문 줄 → 에디터 블록. 글은 표기 그대로 'styled' 블록으로, 사진·영상·클립은 각자 블록으로."""
+def build_blocks(lines: List[str], photos: Dict[int, str], videos: Dict[int, Dict], clips: Dict[int, Dict],
+                 rep_photo: str = "") -> List[Dict]:
+    """본문 줄 → 에디터 블록. 글은 표기 그대로 'styled' 블록으로, 사진·영상·클립은 각자 블록으로.
+    - rep_photo: 대표 사진(썸네일)으로 지정할 사진 경로 → 그 사진이 처음 나오는 블록에 rep=True
+    - 대가성 문구 뒤에는 빈 줄 DISCLOSURE_GAP개, 사진·영상과 글 사이에는 빈 줄 MEDIA_GAP개"""
     blocks: List[Dict] = []
     text: List[str] = []
+    rep_done = False
 
     def flush():
         if any(t.strip() for t in text):
-            blocks.append({"type": "styled", "lines": text[:]})
+            body = text[:]
+            while body and not body[-1].strip():
+                body.pop()
+            b = {"type": "styled", "lines": body}
+            if body and is_disclosure(body[-1]):
+                b["pad_after"] = DISCLOSURE_GAP        # 대가성 문구로 끝나는 블록 (다음이 인용구·사진)
+            blocks.append(b)
         text.clear()
 
+    skip_blank = False
     for l in lines:
         mm = media_marker(l)
         if mm:
@@ -734,8 +767,12 @@ def build_blocks(lines: List[str], photos: Dict[int, str], videos: Dict[int, Dic
             if not item:
                 continue
             flush()
+            skip_blank = False
             if kind == "사진":
-                blocks.append({"type": "single_image", "path": item})
+                b = {"type": "single_image", "path": item}
+                if rep_photo and item == rep_photo and not rep_done:
+                    b["rep"] = rep_done = True
+                blocks.append(b)
             elif kind == "영상":
                 blocks.append({"type": "video", "path": item["path"], "title": item.get("title", "")})
             else:
@@ -743,12 +780,27 @@ def build_blocks(lines: List[str], photos: Dict[int, str], videos: Dict[int, Dic
             continue
         if is_quote(l):
             flush()
+            skip_blank = False
             blocks.append({"type": "quotation", "lines": [plain_text(quote_text(l))]})
             continue
-        if text == [] and not l.strip():
-            continue                                   # 블록 맨 앞 빈 줄은 버림 (사진 뒤 빈 줄)
+        if not l.strip() and (skip_blank or not text):
+            continue                                   # 블록 맨 앞 빈 줄·대가성 문구 뒤 빈 줄은 아래에서 정해진 수만큼
+        skip_blank = False
         text.append(l)
+        if is_disclosure(l):
+            text.extend([""] * DISCLOSURE_GAP)
+            skip_blank = True
     flush()
+
+    # 사진·영상·클립과 글 사이 간격
+    media = {"single_image", "video", "clip"}
+    for i, b in enumerate(blocks):
+        if b["type"] != "styled":
+            continue
+        if i > 0 and blocks[i - 1]["type"] in media:
+            b["lines"] = [""] * MEDIA_GAP + b["lines"]
+        if i + 1 < len(blocks) and blocks[i + 1]["type"] in media:
+            b["pad_after"] = max(MEDIA_GAP, b.get("pad_after", 0))
     return blocks
 
 

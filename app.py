@@ -820,7 +820,7 @@ def _run_publish_task(title: str, content: str, tags_str: str, category: str = "
         # 체험단·기자단 글: 원고 표기 그대로 (자동 사진·인용구·스티커 없이), 사진·영상·클립은 [사진:N] 등 자리에 차례대로
         import review_post
         blocks = review_post.build_blocks(contents, review.get("photos") or {}, review.get("videos") or {},
-                                          review.get("clips") or {})
+                                          review.get("clips") or {}, rep_photo=review.get("rep") or "")
         logger.info(f"📝 체험단·기자단 글: 사진 {len(review.get('photos') or {})}장 · 영상 {len(review.get('videos') or {})}개 · "
                     f"클립 {len(review.get('clips') or {})}개")
         _publish_in_browser(cfg, naver_id, naver_pw, blog_id, cat_to_use, profile, clean_title, contents, tags,
@@ -1388,6 +1388,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     .clip-scene .btns button { padding:2px 7px; font-size:11px; border:1px solid var(--border); background:white; border-radius:6px; cursor:pointer; }
     .rv-item button { flex:0 0 auto; padding:3px 7px; font-size:11.5px; border:1px solid var(--border); background:white; border-radius:6px; cursor:pointer; }
     .rv-item button:disabled { opacity:.35; cursor:default; }
+    .rv-item button.rv-rep.on { background:#fef3c7; border-color:#f59e0b; color:#b45309; font-weight:700; }
     .rv-toolbar { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:6px; }
     .rv-toolbar button, .rv-toolbar select { padding:4px 8px; font-size:12px; border:1px solid var(--border); background:white; border-radius:6px; cursor:pointer; width:auto; }
     .tab-content {
@@ -3921,10 +3922,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         + `<b class="rv-num">${i + 1}</b>`
         + (p.thumb ? `<img src="${p.thumb}">` : '<span class="rv-ph">📷</span>')
         + `<span class="rv-name">${esc(p.name)}<br><small>${p.state === 'up' ? '올리는 중...' : p.state === 'err' ? '<span style="color:#dc2626;">' + esc(p.msg) + '</span>' : '올림'}</small></span>`
+        + `<button type="button" class="rv-rep${p.rep ? ' on' : ''}" title="대표 사진(목록 썸네일)으로 지정 — 안 고르면 글의 첫 사진" onclick="rvSetRep(${i})">${p.rep ? '★ 대표' : '☆ 대표'}</button>`
         + `<button type="button" title="본문 커서 자리에 넣기" onclick="rvInsertLine('[사진:${i + 1}]')">넣기</button>`
         + `<button type="button" title="앞으로" onclick="rvMove(rvPhotos, ${i}, -1, renderReviewPhotos, '사진')" ${i ? '' : 'disabled'}>▲</button>`
         + `<button type="button" title="뒤로" onclick="rvMove(rvPhotos, ${i}, 1, renderReviewPhotos, '사진')" ${i < rvPhotos.length - 1 ? '' : 'disabled'}>▼</button>`
         + `<button type="button" title="빼기" onclick="rvRemove(rvPhotos, ${i}, renderReviewPhotos, '사진')">✕</button></div>`).join('');
+    }
+    function rvSetRep(i) {
+      const on = !rvPhotos[i].rep;
+      rvPhotos.forEach(p => { p.rep = false; });
+      rvPhotos[i].rep = on;
+      renderReviewPhotos();
     }
     async function addReviewPhotos(files) {
       const list = Array.from(files || []).filter(f => (f.type || '').startsWith('image/') || /\.(jpe?g|png|webp|gif|bmp)$/i.test(f.name));
@@ -4095,6 +4103,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (rvPhotos.some(p => p.state === 'up') || rvVideos.some(v => v.state === 'up')) throw new Error('사진·영상을 올리는 중입니다. 다 올라간 뒤 다시 눌러 주세요.');
       return {
         photo_ids: rvPhotos.filter(p => p.state === 'ok').map(p => p.id),
+        rep_photo_id: (rvPhotos.find(p => p.rep && p.state === 'ok') || {}).id || '',
         videos: rvVideos.filter(v => v.state === 'ok').map(v => ({ id: v.id, title: v.title })),
         clips: rvClips.map(c => ({ id: c.id, title: c.title })),
       };
@@ -5761,8 +5770,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return self._send_json({"ok": False, "message": f"가이드 원고는 본문 {review_post.MIN_GUIDE_CHARS:,}자 이상이어야 합니다 "
                                                               f"(지금 {review_post.body_chars(lines):,}자)."}, 400)
             all_tags = review_post.merge_tags(review_post.parse_tags(tags), body_tags)
+            rep_id = str(payload.get("rep_photo_id") or "")
             review = {"photos": {i: path for i, (_, path) in enumerate(photos, 1)}, "videos": videos, "clips": clips,
-                      "center": bool(payload.get("center"))}
+                      "center": bool(payload.get("center")),
+                      "rep": next((path for pid, path in photos if rep_id and pid == rep_id), "")}
             if not start_exclusive_task(run_publish_task, title.strip(), "\n".join(lines), ", ".join(all_tags), category,
                                         False, None, bool(payload.get("public_open", True)), schedule_at, [],
                                         review=review):

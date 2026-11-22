@@ -269,12 +269,14 @@ class RichSmartEditorPublisher(SmartEditorPublisher):
                 self._type_quotation(block.get("lines", []))
             elif b_type == "single_image":
                 self._attach_single_image(block.get("path", ""))
+                if block.get("rep"):
+                    self._set_rep_image()
             elif b_type == "collage_images":
                 self._attach_collage_images(block.get("paths", []))
             elif b_type == "text":
                 self._type_text_block(block.get("lines", []))
             elif b_type == "styled":
-                self._type_review_lines(block.get("lines", []))
+                self._type_review_lines(block.get("lines", []), pad_after=int(block.get("pad_after") or 0))
             elif b_type == "video":
                 self._attach_video(block.get("path", ""), block.get("title", ""))
             elif b_type == "clip":
@@ -526,6 +528,35 @@ class RichSmartEditorPublisher(SmartEditorPublisher):
             except Exception:
                 pass
 
+    def _set_rep_image(self) -> bool:
+        """방금 넣은(맨 아래) 사진을 대표 사진(목록 썸네일)으로 지정: 사진을 누르면 뜨는 [대표] 버튼."""
+        try:
+            imgs = self.frame.locator(".se-component.se-image")
+            n = imgs.count()
+            if not n:
+                logger.warning("대표 사진 지정: 사진 칸을 찾지 못했습니다.")
+                return False
+            comp = imgs.nth(n - 1)
+            comp.scroll_into_view_if_needed(timeout=3000)
+            comp.locator("img").first.click(timeout=3000)
+            self.page.wait_for_timeout(500)
+            for sel in (".se-set-rep-image-button", "button:has-text('대표')"):
+                btn = comp.locator(sel).first
+                if btn.count():
+                    if "se-is-selected" not in (btn.get_attribute("class") or ""):
+                        btn.click(force=True, timeout=3000)
+                        self.page.wait_for_timeout(400)
+                    ok = "se-is-selected" in (btn.get_attribute("class") or "")
+                    logger.info(f"✔ 대표 사진 지정 {'완료' if ok else '(선택 표시 확인 못 함)'}")
+                    return True
+            logger.warning("대표 사진 지정: [대표] 버튼을 찾지 못했습니다 (첫 사진이 대표가 됩니다).")
+            return False
+        except Exception as e:
+            logger.warning(f"대표 사진 지정 실패: {e}")
+            return False
+        finally:
+            self._focus_body_text_field()
+
     def _review_base_style(self):
         """본문 기본 서식 (16px·검정·굵게 해제), 가운데 정렬 설정이면 정렬까지."""
         self._set_font_size(self.BODY_FONT_SIZE)
@@ -534,7 +565,7 @@ class RichSmartEditorPublisher(SmartEditorPublisher):
         if self.review_center:
             self._set_align("center")
 
-    def _type_review_lines(self, lines: List[str]):
+    def _type_review_lines(self, lines: List[str], pad_after: int = 0):
         """review_post 표기(**굵게** ==형광펜== __밑줄__ {{색:글}} ## 소제목 [스티커] [구분선] [지도] [링크:주소])를 서식으로 입력.
         글은 서식을 담은 HTML로 붙여넣는다 (한 글자씩 서식을 켜고 끄며 치면 에디터가 글자를 겹쳐 넣는다)."""
         import review_post as rp
@@ -591,9 +622,10 @@ class RichSmartEditorPublisher(SmartEditorPublisher):
                 flush(); self._insert_link_card(m.group(1)); component(True)
                 continue
             pending.append(raw.rstrip())
-        # 블록 끝 빈 줄은 붙여넣지 않는다 (다음 사진과 사이가 벌어짐)
+        # 블록 끝 빈 줄은 정해진 수(pad_after)만큼만 (다음 사진·인용구와의 간격)
         while pending and not pending[-1].strip():
             pending.pop()
+        pending.extend([""] * pad_after)
         flush()
 
     _review_started = False
