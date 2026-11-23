@@ -23,7 +23,7 @@ cl_datas, cl_binaries, cl_hidden = collect_all("clr_loader")
 # (분석에는 포함해 이 코드들이 쓰는 라이브러리는 기반에 들어가게 하고, 아래에서 PYZ에서만 뺌)
 local_modules = [
     "app", "ai", "auth", "browser", "config", "desktop", "gemini_client", "updater", "version", "image_service",
-    "keyword_service", "publisher", "reference_service", "rich_publisher", "stealth", "text_style", "thumbnail", "user_media", "sigcheck", "licensing", "schedule_queue", "topic_service", "neighbor_service", "shopping_service", "shopping_connect", "review_post", "clip_maker",
+    "keyword_service", "publisher", "reference_service", "rich_publisher", "stealth", "text_style", "thumbnail", "user_media", "sigcheck", "licensing", "schedule_queue", "topic_service", "neighbor_service", "shopping_service", "shopping_connect", "travel_connect", "review_post", "clip_maker",
 ]
 # 이후 코드 업데이트에서 새로 쓸 수 있는 표준 라이브러리를 미리 포함 (없으면 전체 설치 업데이트가 필요해짐)
 stdlib_extra = [

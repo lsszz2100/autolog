@@ -57,7 +57,7 @@ def generate_contextual_plans_with_gemini(keyword: str, title: str, contents: Op
     body_summary = ""
     if contents:
         # 본문 핵심 문단 발췌 (최대 1,500자)
-        valid_lines = [clean_text_for_context(l) for l in contents if clean_text_for_context(l) and not l.strip().startswith(("#", "[상품링크", "[쇼핑커넥트"))]
+        valid_lines = [clean_text_for_context(l) for l in contents if clean_text_for_context(l) and not l.strip().startswith(("#", "[상품링크", "[여행링크", "[쇼핑커넥트"))]
         body_summary = "\n".join(valid_lines[:12])[:1500]
 
     if gemini_api_key:

@@ -89,7 +89,10 @@ class ConnectApi:
 
     def _get(self, path: str, params: Dict) -> Dict:
         params = {**params, "creatorSpaceId": self.space_id}
-        r = self.page.context.request.get(f"{API}/{path}", params=params, headers=self.headers, timeout=20000)
+        try:
+            r = self.page.context.request.get(f"{API}/{path}", params=params, headers=self.headers, timeout=20000)
+        except Exception as e:      # 브라우저 오류 글에는 요청 쿠키가 들어 있어 그대로 남기지 않는다
+            raise ShoppingConnectError(f"쇼핑커넥트 서버에 연결하지 못했습니다 ({type(e).__name__}).") from None
         if r.status != 200:
             raise ShoppingConnectError(f"쇼핑커넥트 API 오류 ({r.status}): {r.text()[:200]}")
         return r.json()
@@ -147,6 +150,9 @@ _RAW_KEYS = ("affiliateProductId", "commissionRate", "promotionCommissionRate", 
 def clean_raw_item(raw) -> Optional[Dict]:
     """화면에서 돌려받은 API 상품 항목 검사 (예약해 두었다가 나중에 글을 쓸 때 다시 검색하지 않으려고 보관).
     상품 번호가 숫자이고 상품 주소가 N사 쇼핑 주소일 때만 쓴다."""
+    if isinstance(raw, dict) and raw.get("kind") == "travel":
+        import travel_connect
+        return travel_connect.clean_raw(raw)
     if not isinstance(raw, dict) or not str(raw.get("affiliateProductId") or "").isdigit():
         return None
     url = str(raw.get("productUrl") or "")
@@ -484,7 +490,7 @@ def search_products(profile, blog_id: str, keyword: str, page: int = 1) -> Dict:
                 raise ShoppingConnectError(f"'{blog_id}' 계정의 로그인이 풀렸습니다. 이 계정을 고른 상태에서 [로그인] 버튼으로 다시 로그인한 뒤 상품을 찾아 주세요.")
             if _is_fatal(msg):
                 raise ShoppingConnectError(msg) if not isinstance(e, ShoppingConnectError) else e
-            logger.warning("쇼핑커넥트 검색 창 없이 실패, 창을 띄워 재시도: %s", msg)
+            logger.warning("쇼핑커넥트 검색 창 없이 실패, 창을 띄워 재시도: %s", type(e).__name__)
             items, total = run(pw, False)
     from config import banned_keywords, find_banned
     words = banned_keywords()
@@ -543,7 +549,7 @@ def issue_links(profile, blog_id: str, product_ids: List[str]) -> Dict[str, str]
                 raise ShoppingConnectError(f"'{blog_id}' 계정의 로그인이 풀렸습니다. 이 계정을 고른 상태에서 [로그인] 버튼으로 다시 로그인한 뒤 해 주세요.")
             if _is_fatal(msg):
                 raise ShoppingConnectError(msg) if not isinstance(e, ShoppingConnectError) else e
-            logger.warning("쇼핑커넥트 링크 발급 창 없이 실패, 창을 띄워 재시도: %s", msg)
+            logger.warning("쇼핑커넥트 링크 발급 창 없이 실패, 창을 띄워 재시도: %s", type(e).__name__)
             got = run(pw, False)
     logger.info(f"🔗 쇼핑커넥트 링크 발급: {len(got)}/{len(ids)}개 " + ", ".join(got.values()))
     if not got:
@@ -598,7 +604,7 @@ def lookup_links(profile, blog_id: str, urls: List[str]) -> Dict[str, Dict]:
                 raise ShoppingConnectError(f"'{blog_id}' 계정의 로그인이 풀렸습니다. [로그인] 버튼으로 다시 로그인해 주세요.")
             if _is_fatal(msg):
                 raise
-            logger.warning("쇼핑커넥트 링크 찾기 창 없이 실패, 창을 띄워 재시도: %s", msg)
+            logger.warning("쇼핑커넥트 링크 찾기 창 없이 실패, 창을 띄워 재시도: %s", type(e).__name__)
             run(pw, False)
     out = {}
     for u, it in found.items():

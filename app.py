@@ -429,19 +429,23 @@ def quota_resume_time(now: datetime = None) -> datetime:
 
 
 def connect_write(cfg: dict, api_key: str, keyword: str = "", product_id=None, memo: str = "",
-                  user_notes: str = "", extra_photos=(), require_ai: bool = False, main_keyword: str = "", item=None):
+                  user_notes: str = "", extra_photos=(), require_ai: bool = False, main_keyword: str = "", item=None, kind: str = ""):
     """쇼핑커넥트 상품 글: 계정 브라우저로 상품 선택·링크 발급·상품 페이지 캡처(3장 이상) → 원고 작성 → 사진 자리 배치.
     반환 (제목, 본문 줄, 태그, 캡처 사진 [{id, desc, thumb}], 상품 정보). 브라우저를 쓰므로 TASK_LOCK 안에서 호출."""
     import shopping_connect
     import user_media
     profile = config_mod.account_profile_dir(cfg)
     blog_id = cfg.get("blog_id") or cfg.get("naver_id")
-    prod, shots = shopping_connect.prepare_product(profile, blog_id, api_key, keyword=keyword, product_id=product_id, item=item)
+    travel = kind == "travel" or (isinstance(item, dict) and item.get("kind") == "travel")
+    if travel:
+        import travel_connect
+    mod = travel_connect if travel else shopping_connect
+    prod, shots = mod.prepare_product(profile, blog_id, api_key, keyword=keyword, product_id=product_id, item=item)
     if memo:
         prod["memo"] = memo
     photos = list(extra_photos) + [(p["id"], user_media.photo_path(p["id"])) for p in shots]
     descs = [user_media.describe_photo(pid, api_key) for pid, _ in extra_photos] + [p["desc"] for p in shots]
-    main_kw = shopping_connect.short_keyword(prod["name"], main_keyword or (keyword if not product_id else ""))
+    main_kw = mod.short_keyword(prod if travel else prod["name"], main_keyword or (keyword if not product_id else ""))
     title, contents, tags = generate_blog_post(main_kw, style="shopping", api_key=api_key, user_notes=user_notes,
                                                photo_descs=descs, product=prod, require_ai=require_ai)
     title, contents, tags = clean_draft(title, contents, tags)
@@ -493,7 +497,8 @@ def write_auto_item(item: dict) -> bool:
                     main_keyword=str(topic.get("search_keyword") or "")[:30], require_ai=True, item=raw,
                     memo=str(topic.get("memo") or ""))
             else:
-                title, contents, tags, shots, prod = connect_write(cfg_acc, api_key, keyword=keyword, require_ai=True)
+                title, contents, tags, shots, prod = connect_write(cfg_acc, api_key, keyword=keyword, require_ai=True,
+                                                                    kind=str(topic.get("connect_kind") or ""))
             connect_photos = [p["id"] for p in shots]
         elif product:
             # 쇼핑커넥트 상품 글: 제목은 AI가 상품 소개형으로 새로 짓는다
@@ -1617,12 +1622,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           <!-- 쇼핑커넥트: 상품 소개 글 + 수수료 안내 + 상품 링크 카드 -->
           <div class="user-box">
             <label style="display:flex; align-items:center; gap:8px; margin:0; cursor:pointer; font-weight:800;">
-              <input type="checkbox" id="shop_on" onchange="toggleShop()" style="width:auto; margin:0;"> 🛒 쇼핑커넥트 상품 글로 쓰기
+              <input type="checkbox" id="shop_on" onchange="toggleShop()" style="width:auto; margin:0;"> 🛒 쇼핑·여행커넥트 상품 글로 쓰기
             </label>
             <div id="shop-fields" style="display:none; margin-top:10px;">
               <div class="user-box-hint">선택한 계정의 쇼핑커넥트 상품을 찾아 고르면, 원고 생성 때 링크 발급 → 상품 페이지 캡처(3장 이상, 본문 사진) → 상품 소개 글 작성까지 자동으로 합니다. 도입 뒤·맺음말 앞에 공식 쇼핑커넥트 상품 카드, 해시태그 앞에 수수료 안내 문구가 들어갑니다.</div>
               <div class="form-group">
-                <label>내 계정 쇼핑커넥트 상품 찾기</label>
+                <label>상품 종류</label>
+                <select id="shop_kind" onchange="changeShopKind()"><option value="shopping">🛒 쇼핑커넥트</option><option value="travel">✈️ 여행커넥트 (패키지·가이드투어)</option></select>
+              </div>
+              <div class="form-group">
+                <label id="shop-find-label">내 계정 쇼핑커넥트 상품 찾기</label>
                 <div style="display:flex; gap:6px;">
                   <input type="text" id="shop_kw" placeholder="예) 가습기 (비우면 옆 분야로 찾기)" style="flex:1; min-width:0;" onkeydown="if(event.key==='Enter'){event.preventDefault();searchShop(document.getElementById('shop-search-btn'));}">
                   <select id="shop_cat" title="검색어를 비우면 이 분야로 찾습니다" style="flex:0 0 auto; width:auto; max-width:150px;" onchange="document.getElementById('shop_kw').value='';searchShop(document.getElementById('shop-search-btn'));"></select>
@@ -1631,6 +1640,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
                 <div id="shop-results" style="display:none; margin-top:8px; border:1px solid var(--border, #e2e8f0); border-radius:8px;"></div>
                 <div id="shop-picked" style="display:none; margin-top:8px; font-size:12.5px; padding:8px; border-radius:8px; background:#f0fdf4; color:#166534;"></div>
               </div>
+              <div id="shop-manual">
               <div style="font-size:12px; color:#64748b; margin:4px 0 8px;">또는 이미 발급받은 링크를 직접 넣기:</div>
               <div class="form-group">
                 <label>쇼핑커넥트 상품 링크</label>
@@ -1643,6 +1653,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
                 <label>상품명 <span style="font-weight:600; color:#64748b;">(비우면 링크에서 자동으로 읽음)</span></label>
                 <input type="text" id="shop_name" placeholder="예) OO 무선 청소기 V12">
                 <div id="shop-info" style="font-size:12px; color:#64748b; margin-top:4px;"></div>
+              </div>
               </div>
               <div class="form-group" style="margin-bottom:0;">
                 <label>상품 특징 메모 (선택)</label>
@@ -1676,8 +1687,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <!-- 고정 문구·지도: 모든 글에 자동 삽입 -->
         <div class="card">
           <div class="card-title">
-            <span>📌 고정 문구·지도 (모든 글에 자동 삽입)</span>
+            <span>📌 고정 문구·지도 (아이디별 저장)</span>
             <button class="btn-outline" style="padding:4px 10px; font-size:12px;" onclick="saveFixed()">저장</button>
+          </div>
+          <div class="form-group">
+            <label>적용할 아이디</label>
+            <select id="fixed_account" onchange="loadFixed(this.value)"></select>
+            <div class="fixed-hint">고른 아이디로 쓰는 글에만 들어갑니다. 예약 글도 그 예약의 아이디 문구를 씁니다.</div>
           </div>
           <div class="form-group">
             <label>상단 문구 (본문 맨 위)</label>
@@ -1803,8 +1819,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             <textarea id="batch_keywords" class="fixed-text" placeholder="예) 제주도 여행, 전기차 보조금, 다이어트 식단"></textarea>
           </div>
           <label style="display:flex; align-items:flex-start; gap:8px; margin:0 0 10px; cursor:pointer; font-size:13px;">
-            <input type="checkbox" id="batch_connect" style="width:auto; margin:3px 0 0;">
+            <input type="checkbox" id="batch_connect" style="width:auto; margin:3px 0 0;" onchange="if(this.checked)document.getElementById('batch_travel').checked=false">
             <span><b>🛒 쇼핑커넥트 자동</b> — 이 계정의 쇼핑커넥트 상품 중 아직 쓰지 않은 상품을 무작위로 골라 링크 발급·상품 페이지 캡처·상품 소개 글까지 작성해 예약합니다. 키워드를 비워 두면 여러 쇼핑 분야에서, 적으면 그 분야에서 고릅니다.</span>
+          </label>
+          <label style="display:flex; align-items:flex-start; gap:8px; margin:0 0 10px; cursor:pointer; font-size:13px;">
+            <input type="checkbox" id="batch_travel" style="width:auto; margin:3px 0 0;" onchange="if(this.checked)document.getElementById('batch_connect').checked=false">
+            <span><b>✈️ 여행커넥트 자동</b> — 키워드를 여행지(예: 다낭, 오사카)로 찾아 아직 쓰지 않은 패키지를 고르고 링크 발급·상품 사진·소개 글까지 작성해 예약합니다. 비우면 여행지를 무작위로 고릅니다.</span>
           </label>
           <div class="form-group">
             <label>🛒 쇼핑커넥트 상품으로 예약 (선택 — 적으면 키워드 대신 상품 한 줄 = 글 하나)</label>
@@ -2720,6 +2740,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       document.getElementById('footer_text').value = data.config.footer_text || '';
       document.getElementById('map_query').value = data.config.map_query || '';
       document.getElementById('map_position').value = data.config.map_position === 'top' ? 'top' : 'bottom';
+      document.getElementById('fixed_account').innerHTML = (accountState.accounts || []).map(a => `<option value="${esc(a.naver_id)}">${esc(a.naver_id)}</option>`).join('');
+      document.getElementById('fixed_account').value = accountState.active || '';
+      document.getElementById('fixed-msg').style.display = 'none';
       document.getElementById('banned_keywords').value = (data.config.banned_keywords || []).join('\n');
       await loadCategories(data.config.post_category || '');
       checkEnv();
@@ -2761,17 +2784,33 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       }
     }
 
-    async function saveFixed() {
+    async function loadFixed(account) {
       const msg = document.getElementById('fixed-msg');
       try {
+        const d = await postJSON('/api/fixed/get', { account });
+        document.getElementById('header_text').value = d.header_text || '';
+        document.getElementById('footer_text').value = d.footer_text || '';
+        document.getElementById('map_query').value = d.map_query || '';
+        document.getElementById('map_position').value = d.map_position === 'top' ? 'top' : 'bottom';
+        msg.style.display = 'none';
+      } catch (e) {
+        msg.style.display = 'block'; msg.style.color = '#b91c1c'; msg.innerText = '❌ ' + e.message;
+      }
+    }
+
+    async function saveFixed() {
+      const msg = document.getElementById('fixed-msg');
+      const account = document.getElementById('fixed_account').value;
+      try {
         await postJSON('/api/save_fixed', {
+          account,
           header_text: document.getElementById('header_text').value,
           footer_text: document.getElementById('footer_text').value,
           map_query: document.getElementById('map_query').value.trim(),
           map_position: document.getElementById('map_position').value,
         });
         msg.style.display = 'block'; msg.style.color = '#15803d';
-        msg.innerText = '✅ 저장되었습니다. 다음 발행부터 모든 글에 자동으로 들어갑니다.';
+        msg.innerText = `✅ ${account} 아이디에 저장했습니다. 이 아이디의 다음 발행부터 들어갑니다.`;
       } catch (e) {
         msg.style.display = 'block'; msg.style.color = '#b91c1c'; msg.innerText = '❌ ' + e.message;
       }
@@ -2973,6 +3012,20 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (sel) sel.innerHTML = SHOP_CATS.map(c => `<option value="${c}">${c}</option>`).join('')
         + '<option value="__issued__">내가 링크 발급한 상품</option>';
     })();
+    const TRAVEL_CATS = ["일본", "오사카", "후쿠오카", "삿포로", "도쿄", "베트남", "다낭", "나트랑", "푸꾸옥", "하노이", "태국", "방콕", "치앙마이",
+      "필리핀", "세부", "보홀", "대만", "홍콩", "싱가포르", "발리", "괌", "사이판", "호주", "유럽", "스페인", "이탈리아", "미국", "캐나다", "중국", "제주", "부산", "강릉"];
+    function shopKind() { return document.getElementById('shop_kind').value; }
+    function changeShopKind() {
+      const travel = shopKind() === 'travel';
+      document.getElementById('shop_cat').innerHTML = (travel ? TRAVEL_CATS : SHOP_CATS).map(c => `<option value="${c}">${c}</option>`).join('')
+        + (travel ? '' : '<option value="__issued__">내가 링크 발급한 상품</option>');
+      document.getElementById('shop-find-label').innerText = travel ? '내 계정 여행커넥트 상품 찾기 (여행지)' : '내 계정 쇼핑커넥트 상품 찾기';
+      document.getElementById('shop_kw').placeholder = travel ? '예) 다낭 (비우면 옆 여행지로 찾기)' : '예) 가습기 (비우면 옆 분야로 찾기)';
+      document.getElementById('shop-manual').style.display = travel ? 'none' : '';
+      document.getElementById('shop_kw').value = ''; document.getElementById('shop_url').value = ''; document.getElementById('shop_name').value = '';
+      shopItems = []; shopRes = null; unpickShop();
+      document.getElementById('shop-results').style.display = 'none';
+    }
     let shopItems = [];
     let shopRes = null;        // 마지막 검색 결과 {keyword, page, pages, total, mode}
     const shopQueue = new Map();   // 예약에 담은 상품 (상품 번호 → 상품). 쪽을 넘겨도 유지
@@ -2988,7 +3041,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       const box = document.getElementById('shop-results');
       box.querySelectorAll('.shop-pager button').forEach(b => b.disabled = true);
       try {
-        const d = await postJSON('/api/shopping/search', { keyword, page });
+        const d = await postJSON('/api/shopping/search', { keyword, page, kind: shopKind() });
         shopItems = d.items || [];
         shopRes = { keyword, page: d.page || page, pages: d.pages || 1, total: d.total || 0, mode: d.mode };
         renderShopResults();
@@ -3039,7 +3092,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       const old = btn ? btn.innerText : '';
       if (btn) { btn.disabled = true; btn.innerText = '발급 중...'; }
       try {
-        const d = await postJSON('/api/shopping/issue', { ids });
+        const all = [...shopItems, ...shopQueue.values()];
+        const urls = {}; let kind = '';
+        for (const id of ids) { const it = all.find(x => x.affiliate_product_id === id); if (it && it.raw && it.raw.kind === 'travel') { kind = 'travel'; urls[id] = it.raw.productUrl; } }
+        if (kind && Object.keys(urls).length !== ids.length) { alert('쇼핑 상품과 여행 상품은 따로 발급해 주세요.'); if (btn) { btn.disabled = false; btn.innerText = old; } return; }
+        const d = await postJSON('/api/shopping/issue', { ids, kind, urls });
         applyShopLinks(d.links || {});
         renderShopResults();
         const n = Object.keys(d.links || {}).length;
@@ -3079,7 +3136,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (n && !other) cnt.value = n;
       batchPlan = null; document.getElementById('batch-preview').style.display = 'none';
       if (!n) { box.style.display = 'none'; box.innerHTML = ''; return; }
-      box.innerHTML = `🛒 쇼핑커넥트 상품 <b>${n}개</b>를 하나씩 상품 글로 예약합니다 (글 쓸 때 링크 발급·상품 사진 캡처)`
+      box.innerHTML = `🛒 커넥트 상품 <b>${n}개</b>를 하나씩 상품 글로 예약합니다 (글 쓸 때 링크 발급·상품 사진 캡처)`
         + (other ? '<br><b style="color:#dc2626;">추천 주제나 상품 링크 줄이 있으면 그쪽이 먼저 쓰입니다. 비우고 예약해 주세요.</b>' : '') + '<ol>'
         + [...shopQueue.values()].map(t => `<li><span>${esc(t.name)} <span style="color:#ea580c;">(수수료 ${t.commission}%)</span></span><button type="button" title="빼기" data-t="${esc(t.affiliate_product_id)}" onclick="unqueueShop(this.dataset.t)">✕</button></li>`).join('')
         + '</ol>';
@@ -3138,10 +3195,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         affiliate_product_id: String(shopPicked.affiliate_product_id),
         name: shopPicked.name,
         raw: shopPicked.raw || null,
+        kind: shopPicked.raw && shopPicked.raw.kind === 'travel' ? 'travel' : '',
         search_keyword: shopRes ? shopRes.keyword : document.getElementById('shop_kw').value.trim(),
         memo: document.getElementById('shop_memo').value.trim(),
       } : shopOn && !document.getElementById('shop_url').value.trim() ? {
         random: true,
+        kind: shopKind() === 'travel' ? 'travel' : '',
         search_keyword: document.getElementById('shop_kw').value.trim(),
         memo: document.getElementById('shop_memo').value.trim(),
       } : shopOn ? {
@@ -3150,7 +3209,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         memo: document.getElementById('shop_memo').value.trim(),
         price: shopPrice,
       } : null;
-      if (product && product.random && !confirm(`고른 상품이 없어 ${product.search_keyword ? `'${product.search_keyword}' 분야에서` : '내 계정 쇼핑커넥트 상품 중'} 아직 쓰지 않은 상품을 무작위로 하나 골라 쓸까요?`)) return;
+      if (product && product.random && !confirm(`고른 상품이 없어 ${product.search_keyword ? `'${product.search_keyword}' 분야에서` : '내 계정 커넥트 상품 중'} 아직 쓰지 않은 상품을 무작위로 하나 골라 쓸까요?`)) return;
       if (!keyword && !product) { alert('키워드를 입력해주세요.'); return; }
       
       const btn = event.target;
@@ -3301,7 +3360,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     function batchForm() {
       return {
         keywords: document.getElementById('batch_keywords').value,
-        connect: document.getElementById('batch_connect').checked,
+        connect: document.getElementById('batch_connect').checked || document.getElementById('batch_travel').checked,
+        connect_kind: document.getElementById('batch_travel').checked ? 'travel' : '',
         products: batchProductLines() ? document.getElementById('batch_products').value : '',
         topics: batchProductLines() ? [] : [...pickedTopics.values()],
         shop_items: [...shopQueue.values()].map(t => ({ affiliate_product_id: t.affiliate_product_id, raw: t.raw, search_keyword: t.search_keyword })),
@@ -3340,10 +3400,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       if (!batchPlan) return;
       const n = batchPlan.slots.length;
       if (!confirm(`글 ${n}개를 자동으로 작성해 예약할까요?\n\n`
-        + (batchPlan.form.connect && !batchPlan.form.products && !batchPlan.form.topics.length && !batchPlan.form.shop_items.length ? `· 글마다 이 계정의 쇼핑커넥트 상품 중 아직 쓰지 않은 상품을 무작위로 골라(${batchPlan.form.keywords.trim() ? '적은 키워드 분야에서' : '여러 쇼핑 분야에서'}) 링크 발급·상품 페이지 캡처 후 상품 소개 글을 씁니다. (글마다 브라우저 창이 잠깐 뜹니다)\n`
+        + (batchPlan.form.connect && !batchPlan.form.products && !batchPlan.form.topics.length && !batchPlan.form.shop_items.length ? `· 글마다 이 계정의 ${batchPlan.form.connect_kind === 'travel' ? '여행커넥트' : '쇼핑커넥트'} 상품 중 아직 쓰지 않은 상품을 무작위로 골라(${batchPlan.form.keywords.trim() ? '적은 키워드 분야에서' : '여러 쇼핑 분야에서'}) 링크 발급·상품 페이지 캡처 후 상품 소개 글을 씁니다. (글마다 브라우저 창이 잠깐 뜹니다)\n`
           : batchPlan.form.products ? `· 쇼핑커넥트 상품 ${n}개로 상품 소개 글을 하나씩 씁니다. (수수료 안내 문구·상품 링크 카드 자동 포함)\n`
           : batchPlan.form.topics.length ? `· 고른 추천 주제 ${n}개를 그대로 예약 목록에 넣습니다.\n`
-          : batchPlan.form.shop_items.length ? `· 담은 쇼핑커넥트 상품 ${n}개로 상품 소개 글을 하나씩 씁니다. 글마다 링크 발급·상품 사진 캡처를 하며 브라우저 창이 잠깐 뜹니다.\n` : `· 먼저 키워드로 서로 다른 제목 ${n}개를 뽑아 예약 목록에 넣습니다. (1분 정도 걸릴 수 있습니다)\n`)
+          : batchPlan.form.shop_items.length ? `· 담은 커넥트 상품 ${n}개로 상품 소개 글을 하나씩 씁니다. 글마다 링크 발급·상품 사진 캡처를 하며 브라우저 창이 잠깐 뜹니다.\n` : `· 먼저 키워드로 서로 다른 제목 ${n}개를 뽑아 예약 목록에 넣습니다. (1분 정도 걸릴 수 있습니다)\n`)
         + `· 약 ${n * 5}분 동안 차례대로 글을 쓰고 블로그에 예약 등록합니다.\n`
         + `· 등록될 때 1건당 100토큰이 차감되고, 등록 뒤 취소해도 돌려받을 수 없습니다.\n`
         + `· 원고를 미리 검토하지 않고 바로 예약됩니다.`)) return;
@@ -5220,14 +5280,27 @@ class RequestHandler(BaseHTTPRequestHandler):
         elif url.path == "/api/save_fixed":
             # 상단/하단 고정 문구·지도 (사용자가 입력한 그대로 저장, 길이만 제한)
             cfg = load_config()
+            account = str(payload.get("account") or cfg.get("active_account") or "")
+            acc = config_mod.find_account(cfg, account)
+            if account and not acc:
+                return self._send_json({"ok": False, "message": "없는 계정입니다."}, 400)
+            # 선택된 계정은 위쪽 값이 저장 때 계정으로 복사되므로 위쪽에, 다른 계정은 그 계정 칸에 바로 쓴다
+            target = cfg if not acc or account == cfg.get("active_account") else acc
             for k, limit in (("header_text", 2000), ("footer_text", 2000), ("map_query", 100)):
                 v = payload.get(k, "")
                 if not isinstance(v, str):
                     return self._send_json({"ok": False, "message": "잘못된 입력 형식"}, 400)
-                cfg[k] = v[:limit]
-            cfg["map_position"] = "top" if payload.get("map_position") == "top" else "bottom"
+                target[k] = v[:limit]
+            target["map_position"] = "top" if payload.get("map_position") == "top" else "bottom"
             save_config(cfg)
-            self._send_json({"ok": True})
+            self._send_json({"ok": True, "account": account})
+
+        elif url.path == "/api/fixed/get":
+            cfg = load_config()
+            acc = config_mod.find_account(cfg, str(payload.get("account") or cfg.get("active_account") or ""))
+            if not acc:
+                return self._send_json({"ok": False, "message": "없는 계정입니다."}, 400)
+            self._send_json({"ok": True, **{k: acc.get(k, "") for k in ("header_text", "footer_text", "map_query", "map_position")}})
 
         elif url.path == "/api/save_banned":
             # 금지 키워드 (줄바꿈·쉼표 구분, 모든 계정 공통)
@@ -5340,8 +5413,13 @@ class RequestHandler(BaseHTTPRequestHandler):
                     if find_banned(name, words):
                         return self._send_json({"ok": False, "message": f"금지 키워드가 든 상품이 있습니다: {name[:40]}"}, 400)
                     skw = re.sub(r"\s+", " ", str(si.get("search_keyword") or "")).strip()[:30]
-                    chosen.append({"title": f"[쇼핑커넥트] {name[:80]} (작성 전)",
-                                   "main_keyword": shopping_connect.short_keyword(name, skw)[:50] or name[:50],
+                    is_travel = raw.get("kind") == "travel"
+                    if is_travel:
+                        import travel_connect
+                    short = (travel_connect.short_keyword({"place": " ".join(raw.get("cities") or [])}, skw) if is_travel
+                             else shopping_connect.short_keyword(name, skw))
+                    chosen.append({"title": f"[{'여행커넥트' if is_travel else '쇼핑커넥트'}] {name[:80]} (작성 전)",
+                                   "main_keyword": short[:50] or name[:50],
                                    "connect": True, "connect_item": raw, "search_keyword": skw})
                 if not chosen:
                     return self._send_json({"ok": False, "message": "담은 상품 정보를 읽지 못했습니다. 상품을 다시 찾아 담아 주세요."}, 400)
@@ -5436,8 +5514,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                 # 쇼핑커넥트 자동: 글 쓸 때 키워드로 계정 상품을 골라 링크 발급·캡처 (제목은 그때 정함)
                 # 키워드가 없으면 글 쓸 때마다 아직 쓰지 않은 상품을 무작위로 고른다
                 picks = schedule_queue.pick_keywords(keywords, count) if keywords else [""] * count
-                topics = [{"title": f"[쇼핑커넥트] {kw + ' ' if kw else '무작위 '}상품 글 (작성 전)", "main_keyword": kw, "connect": True}
-                          for kw in picks]
+                ckind = "travel" if payload.get("connect_kind") == "travel" else ""
+                topics = [{"title": f"[{'여행커넥트' if ckind else '쇼핑커넥트'}] {kw + ' ' if kw else '무작위 '}상품 글 (작성 전)",
+                           "main_keyword": kw, "connect": True, "connect_kind": ckind} for kw in picks]
             else:
                 picks = schedule_queue.pick_keywords(keywords, count)
                 try:
@@ -5543,6 +5622,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                         cfg, gemini_key, keyword=str(p.get("search_keyword", "") or "")[:60],
                         product_id=None if rnd else str(p["affiliate_product_id"]),
                         item=p.get("raw") if isinstance(p.get("raw"), dict) else None,
+                        kind="travel" if p.get("kind") == "travel" else "",
                         main_keyword=str(p.get("search_keyword", "") or payload.get("keyword", ""))[:30],
                         memo=str(p.get("memo", ""))[:3000], user_notes=notes[:20000] if isinstance(notes, str) else "",
                         extra_photos=extra)
@@ -5606,8 +5686,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                 logger.warning(f"쇼핑커넥트 상품 찾기 보류: {why}")
                 return self._send_json({"ok": False, "message": why}, 409)
             try:
-                res = shopping_connect.search_products(config_mod.account_profile_dir(cfg),
-                                                       cfg.get("blog_id") or cfg.get("naver_id"), keyword, page_no)
+                mod = shopping_connect
+                if payload.get("kind") == "travel":
+                    import travel_connect as mod
+                res = mod.search_products(config_mod.account_profile_dir(cfg),
+                                          cfg.get("blog_id") or cfg.get("naver_id"), keyword, page_no)
             except Exception as e:
                 logger.warning(f"쇼핑커넥트 상품 찾기 실패 (계정 {cfg.get('naver_id')}, '{keyword}' {page_no}쪽): {e}")
                 return self._send_json({"ok": False, "message": str(e)}, 400)
@@ -5627,8 +5710,14 @@ class RequestHandler(BaseHTTPRequestHandler):
             if why:
                 return self._send_json({"ok": False, "message": why}, 409)
             try:
-                links = shopping_connect.issue_links(config_mod.account_profile_dir(cfg),
-                                                     cfg.get("blog_id") or cfg.get("naver_id"), ids)
+                if payload.get("kind") == "travel":
+                    import travel_connect
+                    urls = payload.get("urls") if isinstance(payload.get("urls"), dict) else {}
+                    links = travel_connect.issue_links(config_mod.account_profile_dir(cfg), cfg.get("blog_id") or cfg.get("naver_id"),
+                                                       {i: urls.get(i) for i in ids})
+                else:
+                    links = shopping_connect.issue_links(config_mod.account_profile_dir(cfg),
+                                                         cfg.get("blog_id") or cfg.get("naver_id"), ids)
             except Exception as e:
                 logger.warning(f"쇼핑커넥트 링크 발급 실패 (계정 {cfg.get('naver_id')}): {e}")
                 return self._send_json({"ok": False, "message": str(e)}, 400)

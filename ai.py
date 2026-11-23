@@ -70,8 +70,13 @@ STYLE_GUIDES["shopping"] = (
     "'상품명 + 특징/추천 포인트' 형식 (예: '{kw} 특징과 이런 분께 추천하는 이유')",
     "도입에서 어떤 상품인지·누구에게 필요한지 한두 문장으로 소개 → 상품 기본 정보(구성·사양·가격 등 확인된 것만) → 핵심 특징 3~4가지(소제목마다 하나) → "
     "구매 전 확인할 점(사이즈·호환·보관·주의사항 등) → 이런 분께 추천 → 맺음말에 핵심 3줄 요약.")
+STYLE_GUIDES["travel"] = (
+    "여행커넥트 패키지 소개형",
+    "'여행지 + 패키지 특징' 형식 (예: '{kw} 일정과 포함 내역 정리')",
+    "도입에서 어떤 여행 상품인지·누구에게 맞는지 소개 → 기본 정보(기간·출발·항공·가격 등 확인된 것만) → 일정 흐름과 핵심 관광 → 호텔·식사 → "
+    "포함·불포함과 예약 전 확인할 점(현지 경비·쇼핑·선택 관광 등) → 이런 분께 추천 → 맺음말에 핵심 3줄 요약.")
 # 키 없이 쓰는 기본 템플릿 엔진은 3종뿐이라, 새 템플릿은 가장 가까운 기본 템플릿으로 대신 쓴다
-_FALLBACK_STYLE = {"shopping": "info", "compare": "review", "howto": "tips", "qna": "info", "checklist": "tips", "issue": "info"}
+_FALLBACK_STYLE = {"shopping": "info", "travel": "info", "compare": "review", "howto": "tips", "qna": "info", "checklist": "tips", "issue": "info"}
 
 
 def _style_rule(style: str, keyword: str) -> str:
@@ -536,8 +541,8 @@ def _generate_blog_post(keyword: str, style: str = "info", api_key: str = "",
     if product:
         import shopping_service
         user_section = shopping_service.product_section(product) + user_section
-        style = "shopping"
-        logger.info(f"🛒 쇼핑커넥트 상품 글: {product.get('name', '')}")
+        style = "travel" if product.get("kind") == "travel" else "shopping"
+        logger.info(f"🛒 커넥트 상품 글({style}): {product.get('name', '')}")
     if user_section:
         logger.info(f"사용자 자료 우선 반영: 글 {len((user_notes or '').strip())}자, 사진 {len([d for d in (photo_descs or []) if d])}장 설명")
     # 1. N사 실시간 황금키워드 자동 추출 (크몽 판매판은 검색 데이터를 쓰지 않고 AI가 세부 키워드를 정함)

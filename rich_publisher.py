@@ -236,12 +236,13 @@ class RichSmartEditorPublisher(SmartEditorPublisher):
         # 2-1. 상단 고정 영역 (상호명·연락처 등 + 지도): 맨 위 인용구 바로 아래 = 본문 시작
         #      (제목 직후엔 본문 입력칸이 아직 잡히지 않아 인용구 다음에 입력)
         # 쇼핑커넥트 글: 본문의 수수료 안내 줄은 빼고, 본문 첫 부분(맨 위 인용구 바로 아래)과 해시태그 바로 앞에 한 번씩 넣는다
-        from shopping_service import is_shopping_post, is_disclosure, DISCLOSURE
+        from shopping_service import is_shopping_post, is_disclosure, disclosure_for
         shopping = any(is_shopping_post(b.get("lines", [])) for b in blocks if b.get("type") == "text")
+        disclosure = disclosure_for([l for b in blocks if b.get("type") == "text" for l in b.get("lines", [])])
         if shopping:
             blocks = [{**b, "lines": [l for l in b.get("lines", []) if not is_disclosure(l)]} if b.get("type") == "text" else b
                       for b in blocks]
-        top_lines = ([DISCLOSURE, ""] if shopping else []) + (list(header_lines) + [""] if header_lines else [])
+        top_lines = ([disclosure, ""] if shopping else []) + (list(header_lines) + [""] if header_lines else [])
         if top_lines:
             # 쇼핑커넥트 수수료 안내는 본문 첫 부분에도 본문 글씨(16px 검정)로 (공정위 지침: 제목·첫 부분에 표시)
             pos = 1 if blocks and blocks[0].get("type") == "quotation" else 0
@@ -298,7 +299,7 @@ class RichSmartEditorPublisher(SmartEditorPublisher):
 
         # 3-2. 쇼핑커넥트 수수료 안내 (해시태그 바로 앞, 연한 회색)
         if shopping:
-            self._type_disclosure(DISCLOSURE)
+            self._type_disclosure(disclosure)
 
         # 4. 하단 해시태그 본문 블록 추가 (유지)
         if tags:

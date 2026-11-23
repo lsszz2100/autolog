@@ -30,7 +30,7 @@ from version import APP_VERSION, UPDATE_REPO, REQUIRED_RUNTIME, DISPLAY_VERSION 
 # 업데이트로 교체되는 프로그램 코드 (AutoLog.spec 의 local_modules 와 같아야 함)
 CODE_MODULES = [
     "app", "ai", "auth", "browser", "config", "desktop", "gemini_client", "updater", "version", "image_service",
-    "keyword_service", "publisher", "reference_service", "rich_publisher", "stealth", "text_style", "thumbnail", "user_media", "sigcheck", "licensing", "schedule_queue", "topic_service", "neighbor_service", "shopping_service", "shopping_connect", "review_post", "clip_maker",
+    "keyword_service", "publisher", "reference_service", "rich_publisher", "stealth", "text_style", "thumbnail", "user_media", "sigcheck", "licensing", "schedule_queue", "topic_service", "neighbor_service", "shopping_service", "shopping_connect", "travel_connect", "review_post", "clip_maker",
 ]
 LAST_FULL = HERE / "last_full_release.txt"
 # 마지막 전체 설치 파일 정보. 코드만 배포할 때도 이 설치 파일을 함께 올려야
