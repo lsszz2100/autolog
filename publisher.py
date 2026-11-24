@@ -841,7 +841,14 @@ class SmartEditorPublisher:
     MAP_MARKER = "[지도]"
     map_query = ""   # 설정의 지도 장소 검색어 (app.run_publish_task 가 지정)
 
-    def _insert_place_map(self, query: str) -> bool:
+    @property
+    def placed_maps(self) -> list:
+        """이번 글에 실제로 넣은 지도 (가게 이름·주소) — 완료 안내에 보여 준다."""
+        if "_placed_maps" not in self.__dict__:
+            self._placed_maps = []
+        return self._placed_maps
+
+    def _insert_place_map(self, query: str, prefer: str = "") -> bool:
         """[장소] 패널에서 query 검색 → 첫 결과 [추가] → [확인]. 지도는 커서 위치에 단독 컴포넌트로 들어가고
         커서는 지도 아래 새 문단으로 이동한다."""
         f = self.frame
@@ -868,20 +875,32 @@ class SmartEditorPublisher:
             box.type(query, delay=40)
             self.page.wait_for_timeout(300)
             box.press("Enter")
-            item = f.locator("li.se-place-map-search-result-item").first
+            items = f.locator("li.se-place-map-search-result-item")
             try:
-                item.wait_for(state="attached", timeout=6000)
+                items.first.wait_for(state="attached", timeout=6000)
             except Exception:
                 f.locator("button.se-place-search-button").first.click(timeout=2000)
-                item.wait_for(state="attached", timeout=6000)
-            name = item.locator(".se-place-map-search-result-title").inner_text(timeout=2000)
+                items.first.wait_for(state="attached", timeout=6000)
+            # 이름에 찾는 가게가 들어간 결과 우선, 없으면 검색 첫 결과
+            key = re.sub(r"\s+", "", prefer or "")
+            names = [items.nth(i).locator(".se-place-map-search-result-title").inner_text(timeout=2000)
+                     for i in range(min(items.count(), 7))]
+            idx = next((i for i, n in enumerate(names) if key and key in re.sub(r"\s+", "", n)), 0)
+            item = items.nth(idx)
+            name = names[idx]
+            try:
+                addr = item.locator(".se-place-map-search-result-address").inner_text(timeout=1500)
+            except Exception:
+                addr = ""
             item.hover()
             item.locator("button.se-place-add-button").click(force=True, timeout=3000)
             self.page.wait_for_timeout(600)
             f.locator("button.se-popup-button-confirm").first.click(timeout=3000)
             self.page.wait_for_timeout(1500)
             ok = f.locator(".se-component.se-placesMap").count() > before
-            logger.info(f"{'✔ 지도 삽입: ' + name if ok else '⚠️ 지도 삽입 확인 실패'} (검색어: {query})")
+            logger.info(f"{'✔ 지도 삽입: ' + name + ' ' + addr if ok else '⚠️ 지도 삽입 확인 실패'} (검색어: {query})")
+            if ok:
+                self.placed_maps.append(f"{name} ({addr})" if addr else name)
             return ok
         except Exception as e:
             logger.warning(f"지도 삽입 실패 (검색어: {query}): {e}")

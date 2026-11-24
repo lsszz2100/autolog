@@ -901,6 +901,39 @@ _MS_SECTION = re.compile(r"^(?:서론|도입부?|인트로|본론|결론|마무�
 _MS_IMAGE = re.compile(r"^(?:(\d{1,2})\s*번\s*(?:이미지|사진)|(?:이미지|사진)\s*(\d{1,2})\s*번?)(?:\s*[-–—:：]\s*.*)?$")
 
 
+_MAP_GENERIC = set("""맛집 카페 추천 후기 리뷰 데이트 놀거리 가볼만한곳 가볼만한 곳 코스 여행 핫플 분위기 연인과 연인 가족 아이와
+친구와 특별한 저녁 점심 아침 브런치 디저트 솔직 솔직후기 방문 방문기 내돈내산 체험 체험단 모임 회식 가성비 메뉴 근처 주변 신상 오픈
+예약 주차 뷰 뷰맛집 정보 총정리 꿀팁 소개 리스트 베스트 인생 기념일 생일 나들이 산책 숙소 호텔 펜션 식당 레스토랑
+술집 이자카야 고깃집 한식 양식 일식 중식 빵집 베이커리 디저트카페 오마카세 웨이팅 줄서는""".split())
+_PARTICLE_END = re.compile(r"(과|와|한|의|에서|으로|로|을|를|은|는|도|에|랑|이랑)$")
+
+
+def map_queries(title: str, keywords: List[str], place: str = "") -> List[str]:
+    """지도 검색어 후보. 상호가 주어지면 그대로, 아니면 제목에서 가게(메뉴) 이름을 뽑아 '지역 가게' → '가게' 순.
+    키워드만으로(예: '인왕산 맛집') 찾으면 다른 가게가 잡히므로 쓰지 않는다."""
+    if place:
+        return [place]
+    kw_tokens = [t for k in keywords for t in re.split(r"\s+", k) if t]
+    region = " ".join(t for t in kw_tokens if t not in _MAP_GENERIC)[:20]
+    def is_region(t: str) -> bool:       # '성수' ⊂ '성수동' 처럼 키워드 지역명과 겹치는 말
+        return any(t in k or k in t for k in kw_tokens if len(k) >= 2)
+
+    words = [t for t in re.split(r"[\s,·|/]+", re.sub(r"[\[\](){}<>\"'!?~]", " ", title or "")) if t]
+    cands: List[str] = []
+    for i, t in enumerate(words):
+        if len(t) < 2 or t in _MAP_GENERIC or is_region(t) or _PARTICLE_END.search(t) or t.isdigit():
+            continue
+        if t.endswith("점") and cands and words[i - 1] == cands[-1]:
+            cands[-1] = f"{cands[-1]} {t}"    # '어니언 성수점' 같은 지점명은 붙여서
+            continue
+        cands.append(t)
+    if not cands:
+        return []
+    store = cands[-1]
+    out = [f"{region} {store}".strip(), store]
+    return [q for i, q in enumerate(out) if q and q not in out[:i]]
+
+
 def parse_manuscript(text: str) -> Optional[Dict]:
     """받은 기자단 원고 → 지시(제목·키워드·대표사진·지도)와 본문. 본문 문장은 한 글자도 바꾸지 않는다.
     '제목:' 줄과 서론 또는 'N번 이미지' 줄이 있어야 이 양식으로 본다. 아니면 None."""
@@ -957,12 +990,13 @@ def parse_manuscript(text: str) -> Optional[Dict]:
         body.append(l if s else "")
     while body and not body[-1]:
         body.pop()
-    if map_needed:
-        body += ["", f"[지도:{place}]" if place else "[지도]"]
+    queries = map_queries(title, keywords, place) if map_needed else []
+    if map_needed:      # 상호를 안 줬으면 제목·키워드로 찾은 검색어들 ('|'로 구분, 앞에서부터 시도)
+        body += ["", f"[지도:{'|'.join(queries)[:60]}]" if queries else "[지도]"]
     if body_chars(body) < 100:         # 본문 문장이 없으면 원고가 아니라 작성 가이드
         return None
     return {"title": title, "lines": body, "tags": merge_tags(keywords), "rep": rep, "photos": photos,
-            "map_needed": map_needed, "place": place, "place_hint": title.split()[-1] if title.split() else "",
+            "map_needed": map_needed, "place": place, "map_queries": queries,
             "notes": notes[:10]}
 
 

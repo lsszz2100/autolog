@@ -628,9 +628,11 @@ class RichSmartEditorPublisher(SmartEditorPublisher):
             q = rp.map_marker(s)
             if q is not None:
                 flush()
-                place = q or self.map_query
-                if not self._insert_place_map(place):       # 원고가 요구한 지도가 빠진 채 발행되지 않게
-                    raise RuntimeError(f"지도를 넣지 못했습니다 (검색어: {place}). 가게 이름을 확인해 주세요.")
+                tries = [x.strip() for x in (q or self.map_query).split("|") if x.strip()]
+                store = tries[-1] if tries else ""
+                if not any(self._insert_place_map(x, prefer=store) for x in tries):   # 요구한 지도가 빠진 채 발행 금지
+                    raise RuntimeError(f"지도를 넣지 못했습니다 (검색어: {', '.join(tries) or '없음'}). "
+                                       f"본문의 [지도:…] 줄에 정확한 가게 이름을 넣어 주세요.")
                 component(True)
                 continue
             m = rp.LINK_RE.match(s)

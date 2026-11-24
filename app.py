@@ -824,9 +824,9 @@ def _run_publish_task(title: str, content: str, tags_str: str, category: str = "
     if review:
         # 체험단·기자단 글: 원고 표기 그대로 (자동 사진·인용구·스티커 없이), 사진·영상·클립은 [사진:N] 등 자리에 차례대로
         import review_post
+        # 지도는 가이드·원고가 요구할 때만 (원고의 [지도:…] 줄). 아이디별 고정 지도는 체험단·기자단 글에 넣지 않는다
         head, foot = fixed_area_lines(cfg)
-        if any(review_post.map_marker(l) is not None for l in contents):   # 원고에 이미 지도가 있으면 (협찬 업체 지도) 계정 지도는 넣지 않음
-            head, foot = [l for l in head if l != "[지도]"], [l for l in foot if l != "[지도]"]
+        head, foot = [l for l in head if l != "[지도]"], [l for l in foot if l != "[지도]"]
         blocks = review_post.build_blocks(contents, review.get("photos") or {}, review.get("videos") or {},
                                           review.get("clips") or {}, rep_photo=review.get("rep") or "",
                                           head=head, foot=foot)
@@ -982,6 +982,7 @@ def _publish_once(cfg, naver_id, naver_pw, blog_id, cat_to_use, profile, clean_t
                 publisher._save_diagnostic("publish_error")   # 실패 원인을 나중에 볼 수 있게
                 raise
             time.sleep(3)
+            placed_maps = list(publisher.placed_maps)
         finally:
             try:
                 context.close()
@@ -992,19 +993,20 @@ def _publish_once(cfg, naver_id, naver_pw, blog_id, cat_to_use, profile, clean_t
         logger.info(f"✔ 본문 맥락 일치 고화질 실사 이미지 {image_job.ready_count()}장 사용")
 
     # 4. 발행 이력 저장
+    maps_note = f" · 지도: {', '.join(placed_maps)}" if placed_maps else ""
     cat_label = re.sub(r"^\d+_", "", cat_to_use)
     if published_url.startswith("scheduled:"):
         when, _, post_url = published_url.split(":", 1)[1].partition("|")
         add_history(title=clean_title, url=post_url, category=cat_label, tags=tags_str, scheduled_at=when,
                     account=naver_id)
         logger.info(f"🎉 예약 발행 등록 완료! 발행 예정: {when}")
-        CURRENT_TASK = {"status": "success", "message": f"예약 발행 등록 완료 ({when})", "url": post_url or None, "scheduled": True,
+        CURRENT_TASK = {"status": "success", "message": f"예약 발행 등록 완료 ({when}){maps_note}", "url": post_url or None, "scheduled": True,
                         "title": clean_title, "when": when}
         return
     add_history(title=clean_title, url=published_url, category=cat_label, tags=tags_str, account=naver_id)
 
     logger.info(f"🎉 리치 포스팅 완료! 링크: {published_url}")
-    CURRENT_TASK = {"status": "success", "message": "리치 포스팅 완료", "url": published_url}
+    CURRENT_TASK = {"status": "success", "message": f"리치 포스팅 완료{maps_note}", "url": published_url}
 
 # 크몽 판매판: 검색 데이터를 쓰지 않으므로 주제 추천 안내 문구를 바꿔서 보낸다
 _NO_SEARCH_TEXT = [
@@ -3987,11 +3989,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     function rvApplyRep() { if (rvRepNo) rvPhotos.forEach((p, i) => { p.rep = i === rvRepNo - 1; }); }
     function rvApplyManuscript(d) {
       setReviewMode('direct');
-      let lines = d.lines || [], placeMsg = d.place || '';
-      if (d.map_needed && !d.place) {
-        const q = (prompt('가이드에 지도 삽입 요청이 있습니다. 지도에서 찾을 가게 이름을 확인해 주세요.', d.place_hint || '') || '').trim();
-        if (q) { lines = lines.map(l => l === '[지도]' ? `[지도:${q}]` : l); placeMsg = q; }
-      }
+      const lines = d.lines || [];
+      const placeMsg = d.place ? d.place : (d.map_queries || []).length
+        ? `자동 검색 ${d.map_queries.map(q => "'" + q + "'").join(' → ')} (다른 가게면 본문의 [지도:…] 줄을 고쳐 주세요)` : '';
       if (d.title) document.getElementById('rv_title').value = d.title;
       document.getElementById('rv_content').value = lines.join('\n');
       if ((d.tags || []).length) document.getElementById('rv_tags').value = d.tags.join(', ');
