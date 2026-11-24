@@ -777,7 +777,7 @@ def _run_publish_task(title: str, content: str, tags_str: str, category: str = "
         CURRENT_TASK = {"status": "error", "message": "계정 미설정", "url": None}
         return
 
-    # 예약 시각 파싱(웹 UI datetime-local 'YYYY-MM-DDTHH:MM') 및 발행 간격/일일 제한 검사
+    # 예약 시각 파싱(웹 UI datetime-local 'YYYY-MM-DDTHH:MM') 및 발행 간격 검사 (하루 건수 제한 없음)
     from publisher import SmartEditorPublisher
     schedule_dt = None
     if schedule_at:

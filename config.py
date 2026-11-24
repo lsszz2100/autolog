@@ -67,8 +67,7 @@ DEFAULT_CONFIG = {
     "gemini_api_key": "",   # Google Gemini API 키 (선택)
     "auto_thumbnail": True, # 카드뉴스형 썸네일 이미지 자동 생성 및 첨부
     "public_open": True,    # 전체공개 여부
-    "min_interval_min": 30, # 발행(예약 포함) 간 최소 간격(분). 0이면 제한 없음
-    "daily_limit": 5,       # 하루 최대 발행(예약 포함) 수. 0이면 제한 없음
+    "min_interval_min": 30, # 발행(예약 포함) 간 최소 간격(분). 이 안에는 다른 글 1건까지만 허용. 0이면 제한 없음
     # 모든 글에 자동으로 넣는 고정 영역 (상호명·이름·전화번호·주소 등은 사용자가 입력한 그대로 입력)
     "header_text": "",      # 본문 맨 위 문구 (여러 줄)
     "footer_text": "",      # 본문 맨 아래(해시태그 위) 문구 (여러 줄)
@@ -437,13 +436,28 @@ def remove_history(url: str = "", title: str = "", scheduled_at: str = ""):
             json.dump(keep, f, indent=2, ensure_ascii=False)
 
 
+def interval_conflict(target: datetime, times: list, gap_min: int) -> str:
+    """발행 간격 검사. 간격(gap_min분) 안에는 다른 글 1건까지만 허용한다(2건이 붙는 것까지).
+    새 글 곁에 이미 1건이 있는데 그 글 곁에도 다른 글이 있으면(3건이 몰림) 막는다. 하루 건수 제한은 없다."""
+    if gap_min <= 0:
+        return ""
+    gap = gap_min * 60
+    uniq = sorted(set(times))
+    near = [t for t in uniq if abs((target - t).total_seconds()) < gap]
+    if not near:
+        return ""
+    crowded = len(near) >= 2 or any(o != near[0] and abs((near[0] - o).total_seconds()) < gap for o in uniq)
+    if crowded:
+        return (f"다른 발행({near[0]:%m-%d %H:%M})과 {gap_min}분 이내이고, 그 사이에 이미 다른 글이 붙어 있습니다. "
+                f"{gap_min}분 안에는 1건만 더 올릴 수 있으니 시각을 조정해 주세요.")
+    return ""
+
+
 def check_publish_limits(target: datetime, cfg: dict) -> str:
     """
-    발행 간격·일일 발행량 제한을 검사합니다. 위반 시 사유 문자열, 통과 시 "" 를 반환합니다.
+    발행 간격 제한을 검사합니다. 위반 시 사유 문자열, 통과 시 "" 를 반환합니다.
     각 이력의 기준 시각은 예약 시각(scheduled_at)이 있으면 그것, 없으면 실제 발행 시각(time)입니다.
     """
-    min_interval = int(cfg.get("min_interval_min", 0) or 0)
-    daily_limit = int(cfg.get("daily_limit", 0) or 0)
     times = []
     me = cfg.get("naver_id", "")
     legacy = cfg.get("legacy_account", "")
@@ -456,15 +470,4 @@ def check_publish_limits(target: datetime, cfg: dict) -> str:
             times.append(datetime.strptime(raw[:16], "%Y-%m-%d %H:%M"))
         except ValueError:
             continue
-
-    if min_interval > 0:
-        for t in times:
-            if abs((target - t).total_seconds()) < min_interval * 60:
-                return (f"다른 발행({t:%Y-%m-%d %H:%M})과 {min_interval}분 이내입니다. "
-                        f"발행 간격 제한(min_interval_min)을 지켜 시각을 조정해 주세요.")
-    if daily_limit > 0:
-        same_day = sum(1 for t in times if t.date() == target.date())
-        if same_day >= daily_limit:
-            return (f"{target:%Y-%m-%d} 발행(예약 포함)이 이미 {same_day}건으로 "
-                    f"일일 제한(daily_limit={daily_limit})에 도달했습니다.")
-    return ""
+    return interval_conflict(target, times, int(cfg.get("min_interval_min", 0) or 0))

@@ -19,7 +19,7 @@ import uuid
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 
-from config import DATA_DIR, load_history
+from config import DATA_DIR, interval_conflict, load_history
 
 SCHEDULE_FILE = DATA_DIR / "schedules.json"
 ACTIVE = ("queued", "writing", "registering", "scheduled", "canceling")
@@ -92,19 +92,8 @@ def _busy_times(cfg: dict, items: List[Dict], ignore_id: str = "") -> List[datet
 
 
 def _conflict(when: datetime, cfg: dict, items: List[Dict], ignore_id: str = "") -> str:
-    """발행 간격·일일 제한 검사."""
-    gap = int(cfg.get("min_interval_min") or 0)
-    daily = int(cfg.get("daily_limit") or 0)
-    times = _busy_times(cfg, items, ignore_id)
-    if gap:
-        for t in times:
-            if abs((t - when).total_seconds()) < gap * 60:
-                return f"다른 발행({t.strftime('%m-%d %H:%M')})과 {gap}분 이내입니다. 시각을 조정해 주세요."
-    if daily:
-        same_day = sum(1 for t in set(times) if t.date() == when.date())
-        if same_day >= daily:
-            return f"{when.strftime('%m-%d')} 발행(예약 포함)이 이미 {same_day}건으로 하루 제한({daily}건)에 도달했습니다."
-    return ""
+    """발행 간격 검사 (간격 안에는 1건까지 허용, 하루 건수 제한 없음)."""
+    return interval_conflict(when, _busy_times(cfg, items, ignore_id), int(cfg.get("min_interval_min") or 0))
 
 
 def add(draft: Dict, schedule_at: str, cfg: dict) -> Dict:
