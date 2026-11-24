@@ -850,7 +850,13 @@ class SmartEditorPublisher:
             return False
         try:
             before = f.locator(".se-component.se-placesMap").count()
-            f.locator("button.se-map-toolbar-button").first.click(timeout=3000)
+            map_btn = f.locator("button.se-map-toolbar-button").first
+            try:
+                map_btn.click(timeout=3000)
+            except Exception:                  # 사진 도구 등이 버튼을 가리면 닫고 직접 누른다
+                self._dismiss_all_popups()
+                self.page.wait_for_timeout(400)
+                map_btn.evaluate("b => b.click()")
             # 장소 패널 검색칸 (placeholder '장소명을 입력하세요.' — 하단 '글감 검색' 칸과 구분)
             box = f.locator("input[placeholder*='장소명'], input.react-autosuggest__input").first
             box.wait_for(state="visible", timeout=5000)
@@ -985,14 +991,15 @@ class SmartEditorPublisher:
             logger.info(f"✔ 스티커·지도 {done}개 가운데 정렬")
         return done
 
-    def _type_styled_lines(self, lines: List[str], delay: int = 12, plain: bool = False):
+    def _type_styled_lines(self, lines: List[str], delay: int = 12, plain: bool = False, keep_focus: bool = False):
         """본문 줄들을 서식과 함께 입력: 소제목(1. …) 굵게 24px, 본문 16px, 전체 검정.
         이미지 등 다른 컴포넌트 뒤 새 텍스트 블록은 기본 서식(15px)으로 돌아가므로 블록마다 상태를 새로 잡는다."""
         from text_style import is_subheading, sticker_mood
         from shopping_service import link_from_marker, connect_from_marker
         self._ensure_text_toolbar()
         self._set_font_color_black()
-        self._focus_body_text_field()
+        if not keep_focus:
+            self._focus_body_text_field()
         current = None  # None: 아직 미설정, True: 소제목 서식, False: 본문 서식
         for line in lines:
             line_str = line.rstrip()

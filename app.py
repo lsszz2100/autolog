@@ -824,8 +824,12 @@ def _run_publish_task(title: str, content: str, tags_str: str, category: str = "
     if review:
         # 체험단·기자단 글: 원고 표기 그대로 (자동 사진·인용구·스티커 없이), 사진·영상·클립은 [사진:N] 등 자리에 차례대로
         import review_post
+        head, foot = fixed_area_lines(cfg)
+        if any(review_post.map_marker(l) is not None for l in contents):   # 원고에 이미 지도가 있으면 (협찬 업체 지도) 계정 지도는 넣지 않음
+            head, foot = [l for l in head if l != "[지도]"], [l for l in foot if l != "[지도]"]
         blocks = review_post.build_blocks(contents, review.get("photos") or {}, review.get("videos") or {},
-                                          review.get("clips") or {}, rep_photo=review.get("rep") or "")
+                                          review.get("clips") or {}, rep_photo=review.get("rep") or "",
+                                          head=head, foot=foot)
         logger.info(f"📝 체험단·기자단 글: 사진 {len(review.get('photos') or {})}장 · 영상 {len(review.get('videos') or {})}개 · "
                     f"클립 {len(review.get('clips') or {})}개")
         _publish_in_browser(cfg, naver_id, naver_pw, blog_id, cat_to_use, profile, clean_title, contents, tags,
@@ -960,7 +964,7 @@ def _publish_once(cfg, naver_id, naver_pw, blog_id, cat_to_use, profile, clean_t
             publisher = RichSmartEditorPublisher(page, blog_id=blog_id)
             publisher.image_job = image_job
             publisher.review_center = review_center
-            # 체험단·기자단 글은 가이드·원고 그대로 (상단·하단 고정 문구를 넣지 않음)
+            # 체험단·기자단 글의 고정 문구·지도는 blocks_override 안에 이미 들어 있다 (공정위 문구 다음·글 끝)
             header_lines, footer_lines = ([], []) if blocks_override is not None else fixed_area_lines(cfg)
             publisher.map_query = (cfg.get("map_query") or "").strip()
             try:
@@ -1934,6 +1938,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           </div>
           <div id="rv-direct-box" style="display:none;">
             <div class="user-box-hint">아래 [제목]·[본문]·[해시태그]에 쓴 그대로 올립니다. 본문에 사진 자리([사진:1])가 없으면 올린 사진을 문단 사이에 1번부터 차례대로 넣습니다.</div>
+            <button type="button" class="btn-outline" style="width:100%; margin-top:8px;" onclick="rvReadManuscript()">📄 받은 원고 양식 읽기 (제목·키워드·대표사진·지도·N번 이미지)</button>
+            <div id="rv-ms-note" style="display:none; margin-top:8px; font-size:12px; color:#475569; background:#f8fafc; border-radius:8px; padding:8px 10px;"></div>
+
           </div>
         </div>
 
@@ -2034,7 +2041,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
               <button type="button" onclick="rvInsertLine('[스티커]')">스티커</button>
               <button type="button" onclick="const q = prompt('지도에서 찾을 가게·장소 이름 (비우면 [AI 블로그 자동 발행] 탭의 지도 검색어)', document.getElementById('rv_brand').value || ''); if (q !== null) rvInsertLine(q.trim() ? '[지도:' + q.trim().slice(0, 60) + ']' : '[지도]');">지도</button>
             </div>
-            <textarea id="rv_content" rows="22" oninput="rvCount()" placeholder="본문. 📍 소제목 / [인용:한 줄] / [사진:1] [영상:1] [클립:1] [구분선] [스티커] [지도:가게 이름] [링크:https://주소]"></textarea>
+            <textarea id="rv_content" rows="22" oninput="rvCount()" onpaste="rvPasted()" placeholder="본문. 📍 소제목 / [인용:한 줄] / [사진:1] [영상:1] [클립:1] [구분선] [스티커] [지도:가게 이름] [링크:https://주소]"></textarea>
           </div>
           <div class="form-group">
             <label>해시태그 <span style="font-weight:400; color:var(--text-muted);">(쉼표나 띄어쓰기로 구분, 최대 30개)</span></label>
@@ -3976,7 +3983,48 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
 
     // 사진
+    let rvRepNo = 0, rvManuscript = false;   // 받은 원고의 '대표사진 N번' (목록 N번째), 받은 원고 여부
+    function rvApplyRep() { if (rvRepNo) rvPhotos.forEach((p, i) => { p.rep = i === rvRepNo - 1; }); }
+    function rvApplyManuscript(d) {
+      setReviewMode('direct');
+      let lines = d.lines || [], placeMsg = d.place || '';
+      if (d.map_needed && !d.place) {
+        const q = (prompt('가이드에 지도 삽입 요청이 있습니다. 지도에서 찾을 가게 이름을 확인해 주세요.', d.place_hint || '') || '').trim();
+        if (q) { lines = lines.map(l => l === '[지도]' ? `[지도:${q}]` : l); placeMsg = q; }
+      }
+      if (d.title) document.getElementById('rv_title').value = d.title;
+      document.getElementById('rv_content').value = lines.join('\n');
+      if ((d.tags || []).length) document.getElementById('rv_tags').value = d.tags.join(', ');
+      rvManuscript = true; rvRepNo = d.rep || 0;
+      rvPhotos.forEach(p => { p.rep = false; });
+      renderReviewPhotos(); rvCount();
+      const n = (d.photos || []).length;
+      const rows = [d.title ? `제목 그대로: ${esc(d.title)}` : '⚠️ 제목 줄이 없어 제목을 직접 넣어 주세요', `본문 그대로, 이미지 자리 ${n}곳`,
+        d.rep ? `대표사진: ${d.rep}번` : '', d.map_needed ? `지도: ${placeMsg ? esc(placeMsg) : '⚠️ 가게 이름 필요'}` : '',
+        (d.tags || []).length ? `키워드: ${esc(d.tags.join(', '))}` : ''].filter(Boolean).map(x => '✔ ' + x);
+      (d.notes || []).forEach(x => rows.push('⚠️ 처리하지 못한 지시: ' + esc(x)));
+      (d.banned || []).forEach(x => rows.push('🚫 금지 키워드 ' + esc(x)));
+      rows.push('<span style="color:#b45309;">사진은 원고의 이미지 번호 순서대로 올려 주세요. 대가성 문구가 필요하면 본문 맨 위에 넣어 주세요.</span>');
+      const box = document.getElementById('rv-ms-note');
+      box.innerHTML = '<b>받은 원고 반영 확인</b><br>' + rows.join('<br>'); box.style.display = 'block';
+    }
+    async function rvTryManuscript(text) {
+      const d = await postJSON('/api/review/parse', { text });
+      if (!d.found) return false;
+      rvApplyManuscript(d);
+      return true;
+    }
+    function rvPasted() {
+      setTimeout(async () => { try { await rvTryManuscript(document.getElementById('rv_content').value); } catch (e) {} }, 50);
+    }
+    async function rvReadManuscript() {
+      try {
+        if (!await rvTryManuscript(document.getElementById('rv_content').value))
+          alert("본문 칸에 받은 원고를 붙여 넣어 주세요. ('제목:' 줄과 '서론' 또는 '1번 이미지' 줄이 있어야 합니다)");
+      } catch (e) { alert(e.message || e); }
+    }
     function renderReviewPhotos() {
+      rvApplyRep();
       const box = document.getElementById('rv-photos');
       box.innerHTML = rvPhotos.map((p, i) => `<div class="rv-item" ${rvDragAttrs('사진', i)}>`
         + `<b class="rv-num">${i + 1}</b>`
@@ -3990,6 +4038,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
     function rvSetRep(i) {
       const on = !rvPhotos[i].rep;
+      rvRepNo = 0;
       rvPhotos.forEach(p => { p.rep = false; });
       rvPhotos[i].rep = on;
       renderReviewPhotos();
@@ -4160,6 +4209,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
 
     function rvMedia() {
+      rvApplyRep();
       if (rvPhotos.some(p => p.state === 'up') || rvVideos.some(v => v.state === 'up')) throw new Error('사진·영상을 올리는 중입니다. 다 올라간 뒤 다시 눌러 주세요.');
       return {
         photo_ids: rvPhotos.filter(p => p.state === 'ok').map(p => p.id),
@@ -4172,6 +4222,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     async function reviewDraft(btn) {
       const guide = document.getElementById('rv_guide').value.trim();
       if (guide.length < 20) { alert('가이드 내용을 붙여 넣어 주세요.'); return; }
+      try {   // 완성된 기자단 원고를 받은 경우: AI로 다시 쓰지 않고 그대로 사용
+        const ms = await postJSON('/api/review/parse', { text: guide });
+        if (ms.found && ms.title) {
+          if (document.getElementById('rv_content').value.trim() && !confirm('지금 원고를 받은 원고로 바꿀까요?')) return;
+          rvApplyManuscript(ms);
+          return;
+        }
+      } catch (e) {}
+      rvManuscript = false; rvRepNo = 0;
       if (document.getElementById('rv_content').value.trim() && !confirm('지금 원고를 새 원고로 바꿀까요?')) return;
       let media;
       try { media = rvMedia(); } catch (e) { alert(e.message); return; }
@@ -4183,6 +4242,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           photo_order: document.getElementById('rv_photo_order').value });
         document.getElementById('rv_title').value = d.title || '';
         document.getElementById('rv_content').value = (d.contents || []).join('\n');
+        if (d.rep && rvPhotos[d.rep - 1]) {   // 가이드의 번호 = 올린 순서. 사진 순서가 바뀌어도 그 사진을 따라간다
+          rvPhotos.forEach((p, i) => { p.rep = i === d.rep - 1; });
+          renderReviewPhotos();
+        }
         rvSyncPhotoOrder();
         document.getElementById('rv_tags').value = (d.tags || []).join(', ');
         const cl = document.getElementById('rv-checklist');
@@ -4358,7 +4421,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       const st = document.getElementById('rv-status');
       try {
         await postJSON('/api/review/publish', {
-          mode: rvMode, title, content, tags: document.getElementById('rv_tags').value,
+          mode: rvMode, manuscript: rvManuscript, title, content, tags: document.getElementById('rv_tags').value,
           category: document.getElementById('post_category').value.trim(),
           center: document.getElementById('rv_center').checked, public_open: document.getElementById('rv_public').checked,
           schedule_at, ...media });
@@ -5833,8 +5896,24 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return self._send_json({"ok": False, "message": str(e)}, 400)
             chars = review_post.body_chars(lines)
             logger.info(f"📝 체험단 가이드 원고: '{title}' 본문 {chars:,}자, 해시태그 {len(tags)}개")
+            rep_no = review_post.rep_photo_no(guide)
+            if rep_no:
+                checklist.append(f"대표사진 {rep_no}번 지정" if rep_no <= len(photos)
+                                 else f"⚠️ 가이드의 대표사진은 {rep_no}번인데 사진이 {len(photos)}장입니다")
             self._send_json({"ok": True, "title": title, "contents": lines, "tags": tags, "checklist": checklist,
-                             "chars": chars, "min_chars": review_post.MIN_GUIDE_CHARS})
+                             "rep": rep_no, "chars": chars, "min_chars": review_post.MIN_GUIDE_CHARS})
+
+        elif url.path == "/api/review/parse":
+            # 받은 기자단 원고 양식 읽기 (AI 없음, 본문은 그대로)
+            import review_post
+            text = payload.get("text", "")
+            if not isinstance(text, str) or len(text) > 60000:
+                return self._send_json({"ok": False, "message": "잘못된 입력 형식"}, 400)
+            d = review_post.parse_manuscript(text)
+            if not d:
+                return self._send_json({"ok": True, "found": False})
+            hits = review_post.banned_hits(d["title"], d["lines"], d["tags"], config_mod.banned_keywords())
+            self._send_json({"ok": True, "found": True, "banned": hits[:10], **d})
 
         elif url.path == "/api/review/publish":
             import review_post
@@ -5854,11 +5933,21 @@ class RequestHandler(BaseHTTPRequestHandler):
             videos = review_video_map(payload.get("videos"))
             clips = review_clip_map(payload.get("clips"))
             counts = {"사진": len(photos), "영상": len(videos), "클립": len(clips)}
+            if payload.get("manuscript"):      # 받은 원고: 'N번 이미지' 자리와 사진 번호가 어긋나면 안 됨
+                nums = [m[1] for m in map(review_post.media_marker, content.split("\n")) if m and m[0] == "사진"]
+                if nums and max(nums) > len(photos):
+                    return self._send_json({"ok": False, "message": f"원고에 {max(nums)}번 이미지까지 있는데 사진은 {len(photos)}장입니다. 사진을 번호 순서대로 올려 주세요."}, 400)
             lines, body_tags = review_post.prepare_direct(content, counts)
+            _cfg = load_config()
+            if any(review_post.map_marker(l) == "" for l in lines) and not (_cfg.get("map_query") or "").strip():
+                return self._send_json({"ok": False, "message": "지도에 넣을 가게 이름이 없습니다. 본문의 [지도] 줄을 [지도:가게 이름]으로 고쳐 주세요."}, 400)
             if mode == "guide" and review_post.body_chars(lines) < review_post.MIN_GUIDE_CHARS:
                 return self._send_json({"ok": False, "message": f"가이드 원고는 본문 {review_post.MIN_GUIDE_CHARS:,}자 이상이어야 합니다 "
                                                               f"(지금 {review_post.body_chars(lines):,}자)."}, 400)
             all_tags = review_post.merge_tags(review_post.parse_tags(tags), body_tags)
+            _hits = review_post.banned_hits(title, lines, all_tags, config_mod.banned_keywords(_cfg))
+            if _hits:
+                return self._send_json({"ok": False, "message": "금지 키워드가 있어 발행하지 않았습니다.\n" + "\n".join(_hits[:8])}, 400)
             rep_id = str(payload.get("rep_photo_id") or "")
             review = {"photos": {i: path for i, (_, path) in enumerate(photos, 1)}, "videos": videos, "clips": clips,
                       "center": bool(payload.get("center")),

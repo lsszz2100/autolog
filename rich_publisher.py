@@ -261,7 +261,7 @@ class RichSmartEditorPublisher(SmartEditorPublisher):
                 if len(paths) >= 2:
                     b_type, block = "collage_images", {"type": "collage_images", "paths": paths}
                 elif len(paths) == 1:
-                    b_type, block = "single_image", {"type": "single_image", "path": paths[0]}
+                    b_type, block = "single_image", {"type": "single_image", "path": paths[0], "rep": block.get("rep")}
                 else:
                     logger.warning("이 자리에 넣을 사진을 확보하지 못해 사진 없이 진행합니다.")
                     continue
@@ -270,8 +270,8 @@ class RichSmartEditorPublisher(SmartEditorPublisher):
                 self._type_quotation(block.get("lines", []))
             elif b_type == "single_image":
                 self._attach_single_image(block.get("path", ""))
-                if block.get("rep"):
-                    self._set_rep_image()
+                if block.get("rep") and not self._set_rep_image():
+                    raise RuntimeError("가이드의 대표사진을 지정하지 못했습니다.")
             elif b_type == "collage_images":
                 self._attach_collage_images(block.get("paths", []))
             elif b_type == "text":
@@ -283,9 +283,16 @@ class RichSmartEditorPublisher(SmartEditorPublisher):
             elif b_type == "clip":
                 self._insert_my_clip(str(block.get("id", "")), block.get("title", ""))
             elif b_type == "fixed":
-                logger.info(f"상단 고정 문구 입력 ({len([l for l in block.get('lines', []) if l])}줄)")
-                self._focus_body_text_field()
-                self._type_styled_lines(block.get("lines", []), plain=True)
+                logger.info(f"고정 문구 입력 ({len([l for l in block.get('lines', []) if l])}줄)")
+                if block.get("review"):
+                    self._ensure_text_toolbar()
+                    self._focus_review_body()
+                    if self.review_center:
+                        self._set_align("center")
+                    self._type_styled_lines(block.get("lines", []), plain=True, keep_focus=True)
+                else:
+                    self._focus_body_text_field()
+                    self._type_styled_lines(block.get("lines", []), plain=True)
             else:
                 logger.warning(f"알 수 없는 블록 타입: {b_type}")
 
@@ -548,8 +555,8 @@ class RichSmartEditorPublisher(SmartEditorPublisher):
                         btn.click(force=True, timeout=3000)
                         self.page.wait_for_timeout(400)
                     ok = "se-is-selected" in (btn.get_attribute("class") or "")
-                    logger.info(f"✔ 대표 사진 지정 {'완료' if ok else '(선택 표시 확인 못 함)'}")
-                    return True
+                    logger.info(f"✔ 대표 사진 지정 {'완료' if ok else '실패 (선택 표시 없음)'}")
+                    return ok
             logger.warning("대표 사진 지정: [대표] 버튼을 찾지 못했습니다 (첫 사진이 대표가 됩니다).")
             return False
         except Exception as e:
@@ -566,11 +573,8 @@ class RichSmartEditorPublisher(SmartEditorPublisher):
         if self.review_center:
             self._set_align("center")
 
-    def _type_review_lines(self, lines: List[str], pad_after: int = 0):
-        """review_post 표기(**굵게** ==형광펜== __밑줄__ {{색:글}} ## 소제목 [스티커] [구분선] [지도] [링크:주소])를 서식으로 입력.
-        글은 서식을 담은 HTML로 붙여넣는다 (한 글자씩 서식을 켜고 끄며 치면 에디터가 글자를 겹쳐 넣는다)."""
-        import review_post as rp
-        self._ensure_text_toolbar()
+    def _focus_review_body(self):
+        """체험단 글의 다음 입력 자리로 커서를 옮긴다."""
         if not self._review_started and not self.frame.locator(".se-component:not(.se-documentTitle):not(.se-text)").count():
             # 제목 바로 다음은 본문 칸이 아직 잡히지 않아 본문 첫 줄을 직접 눌러 커서를 둔다
             try:
@@ -581,6 +585,13 @@ class RichSmartEditorPublisher(SmartEditorPublisher):
         else:
             self._focus_body_text_field()
         self._review_started = True
+
+    def _type_review_lines(self, lines: List[str], pad_after: int = 0):
+        """review_post 표기(**굵게** ==형광펜== __밑줄__ {{색:글}} ## 소제목 [스티커] [구분선] [지도] [링크:주소])를 서식으로 입력.
+        글은 서식을 담은 HTML로 붙여넣는다 (한 글자씩 서식을 켜고 끄며 치면 에디터가 글자를 겹쳐 넣는다)."""
+        import review_post as rp
+        self._ensure_text_toolbar()
+        self._focus_review_body()
         pending: List[str] = []
 
         def flush():
@@ -616,7 +627,11 @@ class RichSmartEditorPublisher(SmartEditorPublisher):
                 continue
             q = rp.map_marker(s)
             if q is not None:
-                flush(); component(self._insert_place_map(q or self.map_query))
+                flush()
+                place = q or self.map_query
+                if not self._insert_place_map(place):       # 원고가 요구한 지도가 빠진 채 발행되지 않게
+                    raise RuntimeError(f"지도를 넣지 못했습니다 (검색어: {place}). 가게 이름을 확인해 주세요.")
+                component(True)
                 continue
             m = rp.LINK_RE.match(s)
             if m:

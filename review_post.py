@@ -3,6 +3,7 @@
 두 가지 방식:
   1) 가이드 원고: 업체·대행사가 준 가이드를 해석해 원고를 만든다 (본문 1,500자 이상, 가이드의 필수 문구·키워드·해시태그 반영)
   2) 그대로 올리기: 사용자가 준 원고를 고치지 않고 그대로 올린다
+     (기자단 원고 양식 '제목: / 키워드: / 대표사진 N번 / 지도 / 서론 / N번 이미지 - 설명'은 지시만 읽고 본문은 그대로)
 
 본문 표기 (원고 안에서 쓰는 약속, 두 방식 공통)
   **굵게**   __밑줄__   ==형광펜==   {{빨강:글자색}}  (빨강·주황·노랑·초록·파랑·남색·보라·분홍·회색)
@@ -15,6 +16,8 @@ import logging
 import re
 import time
 from typing import Dict, List, Optional, Tuple
+
+from config import banned_keywords, find_banned
 
 _PORTAL = "\ub124\uc774\ubc84"  # 포털 이름(한글), 소스에 상표명을 직접 쓰지 않음
 
@@ -554,6 +557,56 @@ def missing_requirements(title: str, lines: List[str], req: Dict) -> List[str]:
     return out
 
 
+def _banned_rule() -> str:
+    words = banned_keywords()
+    if not words:
+        return ""
+    return ("\n[금지 키워드 - 가이드보다 우선]\n- 아래 단어와 그 단어가 가리키는 대상은 제목·소제목·본문·해시태그 어디에도 쓰지 마세요: "
+            + ", ".join(words[:100]) + "\n")
+
+
+def drop_banned(lines: List[str], words: List[str]) -> List[str]:
+    """AI 원고에서 금지 키워드가 든 줄을 뺀다. 소제목에 있으면 그 단락까지. 사진 등 자리 표시와 대가성 문구는 남긴다."""
+    if not words:
+        return lines
+    out: List[str] = []
+    skip = False
+    for l in lines:
+        s = l.strip()
+        if media_marker(s) or is_disclosure(s):
+            out.append(l)
+            continue
+        if s and (is_heading(s) or emoji_heading(s)):
+            skip = bool(find_banned(s, words))
+            if skip:
+                continue
+        elif skip:
+            continue
+        if find_banned(s, words):
+            continue
+        out.append(l)
+    return out
+
+
+def banned_hits(title: str, lines: List[str], tags: List[str], words: List[str]) -> List[str]:
+    """발행 전 점검: 금지 키워드가 있는 곳 설명. 법으로 넣어야 하는 대가성 문구는 검사하지 않는다."""
+    if not words:
+        return []
+    out: List[str] = []
+    w = find_banned(title, words)
+    if w:
+        out.append(f"제목: {w}")
+    for l in lines:
+        w = find_banned(l, words) if not is_disclosure(l) else ""
+        if w:
+            out.append(f"본문 '{l.strip()[:30]}': {w}")
+    for t in tags or []:
+        w = find_banned(t, words)
+        if w:
+            out.append(f"해시태그 {t}: {w}")
+    return out
+
+
 def _repair_prompt(guide: str, title: str, lines: List[str], missing: List[str]) -> str:
     body = "\n".join(lines)
     todo = "\n".join("- " + m for m in missing)
@@ -563,7 +616,7 @@ def _repair_prompt(guide: str, title: str, lines: List[str], missing: List[str])
 
 - 나머지 문장과 [사진:N] 같은 표기의 번호·위치·순서는 그대로 두고, 필요한 곳에 자연스럽게 넣거나 문장을 조금 고치세요.
 - 제목을 고쳐야 하면 title도 고치세요. **, ##, ==, __, > 같은 꾸밈 기호는 쓰지 마세요.
-
+{_banned_rule()}
 <가이드>
 {guide[:6000]}
 </가이드>
@@ -635,7 +688,7 @@ def _prompt(guide: str, notes: str, brand: str, photo_descs: List[str], n_videos
 5. 가이드·메모·사진에 없는 사실을 지어내지 마세요: 수치·기간·효과·가격·주소·전화번호, 직원·사장님의 응대, 다른 손님 모습, 날씨, 함께 간 사람, 재방문 여부 같은 겪은 일. 확인되지 않은 효능을 단정하지 마세요. 체험 소감은 가이드·메모·사진에 근거한 범위에서 1인칭으로 자연스럽게 쓰고, 분량은 가이드에 있는 특징을 더 자세히 풀어 설명해서 채우세요.
 6. 본문 분량은 공백 제외 {min_chars + 500:,}자 안팎으로 쓰세요(최소 {min_chars:,}자, 짧으면 다시 써야 합니다). 소제목 4~6개마다 2~4문단씩, 가이드의 특징·장점·사용법·느낌을 자세히 풀어 쓰면 됩니다. 가이드가 더 길게 요구하면 그 분량을 따르세요.
 7. 말투·문체는 가이드가 정하면 그대로, 정하지 않으면 친근한 블로그 존댓말로 쓰세요.
-
+{_banned_rule()}
 [꾸밈 표기 - 가이드가 원하는 꾸밈을 아래 표기로 넣으세요]
 - 기호 금지: **, ##, ###, ==, __, >, *, ~~, 백틱, {{{{색:글자}}}} 같은 마크다운·꾸밈 기호를 절대 쓰지 마세요. 강조하고 싶은 말도 기호 없이 문장으로만.
 - 이모지: 가이드가 금지하지 않으면 문단·소제목에 어울리게 적당히 쓰세요(문단마다 0~2개). 가이드가 금지하면 쓰지 마세요.
@@ -673,7 +726,7 @@ def _expand_prompt(guide: str, title: str, lines: List[str], need: int) -> str:
 - 가이드의 지시 문장(…해 주세요, …기재 부탁드립니다 등)은 옮겨 적지 마세요.
 - **, ##, ==, __, > 같은 꾸밈 기호, [사진:N] 같은 표기, 해시태그는 쓰지 마세요. 이모지는 적당히 써도 됩니다.
 - 가이드·원고에 없는 수치·효과·가격·겪은 일을 지어내지 마세요.
-
+{_banned_rule()}
 <가이드>
 {guide[:6000]}
 </가이드>
@@ -753,7 +806,8 @@ def generate_from_guide(guide: str, api_key: str, notes: str = "", brand: str = 
     tags = merge_tags(req["hashtags"], [str(t) for t in data.get("tags") or []], body_tags)
     checklist = [str(c)[:200] for c in data.get("checklist") or []][:20]
 
-    lines = drop_copied_instructions(lines, guide)
+    words = banned_keywords()
+    lines = drop_banned(drop_copied_instructions(lines, guide), words)
     accept_more = lambda text: (lambda d: d if isinstance(d, dict) and d.get("more") else None)(gemini_client.extract_json(text))
     for attempt in range(3):
         if body_chars(lines) >= min_chars:
@@ -786,6 +840,10 @@ def generate_from_guide(guide: str, api_key: str, notes: str = "", brand: str = 
                 tags = merge_tags(tags, more_tags)
         except Exception as e:
             logger.warning(f"가이드 필수 사항 보완 실패: {e}")
+    lines = drop_banned(lines, words)
+    tags = [t for t in tags if not find_banned(t, words)]
+    if find_banned(title, words):
+        checklist.append(f"⚠️ 제목에 금지 키워드 '{find_banned(title, words)}'가 있어요. 고쳐야 발행됩니다")
     for m in missing_requirements(title, lines, req):
         checklist.append("⚠️ 확인 필요: " + m)
     if not tags:                      # 태그는 꼭 넣는다 (가이드에 없고 AI도 안 줬으면 제목 단어로)
@@ -820,16 +878,107 @@ def prepare_direct(content: str, counts: Dict[str, int]) -> Tuple[List[str], Lis
     return order_media(lines, counts), tags
 
 
+# ── 기자단 원고 양식 ──
+
+_MS_TITLE = re.compile(r"^제목\s*[:：]\s*(.+)$")
+_MS_KEYWORD = re.compile(r"^(?:메인\s*|필수\s*)?키워드\s*[:：]\s*(.+)$")
+_REP_RES = (re.compile(r"(?:대표\s*(?:사진|이미지)|썸네일)\D{0,8}?(\d{1,2})\s*번"),
+            re.compile(r"(?:대표\s*(?:사진|이미지)|썸네일)\s*[:：]?\s*(\d{1,2})\s*$", re.M),
+            re.compile(r"(\d{1,2})\s*번\s*(?:사진|이미지)?\s*[을를은는이가]?\s*(?:대표|썸네일)(?:\s*(?:사진|이미지))?\s*(?:로|으로|지정|설정|해|부탁|$)", re.M))
+
+
+def rep_photo_no(text: str) -> int:
+    """가이드·원고의 '대표사진 5번', '5번 사진을 대표로' → 5. 없으면 0."""
+    for rx in _REP_RES:
+        m = rx.search(text or "")
+        if m and int(m.group(1)) > 0:
+            return int(m.group(1))
+    return 0
+
+
+_MS_PLACE = re.compile(r"^(?:지도|업체명?|상호명?|매장명?|가게|장소)\s*[:：]\s*(.+)$")
+_MS_SECTION = re.compile(r"^(?:서론|도입부?|인트로|본론|결론|마무리|아웃트로)\s*[:：]?$")
+_MS_IMAGE = re.compile(r"^(?:(\d{1,2})\s*번\s*(?:이미지|사진)|(?:이미지|사진)\s*(\d{1,2})\s*번?)(?:\s*[-–—:：]\s*.*)?$")
+
+
+def parse_manuscript(text: str) -> Optional[Dict]:
+    """받은 기자단 원고 → 지시(제목·키워드·대표사진·지도)와 본문. 본문 문장은 한 글자도 바꾸지 않는다.
+    '제목:' 줄과 서론 또는 'N번 이미지' 줄이 있어야 이 양식으로 본다. 아니면 None."""
+    raw = [l.rstrip() for l in (text or "").replace("\r\n", "\n").split("\n")]
+    start = next((i for i, l in enumerate(raw) if _MS_SECTION.match(l.strip()) or _MS_IMAGE.match(l.strip())), None)
+    if start is None:
+        return None
+    title, place, rep, map_needed = "", "", 0, False
+    keywords: List[str] = []
+    notes: List[str] = []
+    for l in raw[:start]:
+        s = l.strip()
+        if not s:
+            continue
+        m = _MS_TITLE.match(s)
+        if m:
+            title = m.group(1).strip()
+            continue
+        m = _MS_KEYWORD.match(s)
+        if m:
+            keywords += [k.strip() for k in re.split(r"[,/]", m.group(1)) if k.strip()]
+            continue
+        if rep_photo_no(s):
+            rep = rep_photo_no(s)
+            continue
+        m = _MS_PLACE.match(s)
+        if m:
+            place = m.group(1).strip()[:60]
+            if s.startswith("지도"):
+                map_needed = True
+            continue
+        if "지도" in s and re.search(r"넣|첨부|삽입|추가|필수", s):
+            map_needed = True
+            continue
+        notes.append(s)
+    if not title and not (rep or map_needed or keywords):
+        return None
+    body: List[str] = []
+    photos: List[int] = []
+    for l in raw[start:]:
+        s = l.strip()
+        if _MS_SECTION.match(s):
+            continue
+        m = _MS_IMAGE.match(s)
+        if m:
+            n = int(m.group(1) or m.group(2))
+            photos.append(n)
+            while body and not body[-1]:
+                body.pop()
+            body += ["", f"[사진:{n}]", ""] if body else [f"[사진:{n}]", ""]
+            continue
+        if not s and (not body or not body[-1]):
+            continue
+        body.append(l if s else "")
+    while body and not body[-1]:
+        body.pop()
+    if map_needed:
+        body += ["", f"[지도:{place}]" if place else "[지도]"]
+    if body_chars(body) < 100:         # 본문 문장이 없으면 원고가 아니라 작성 가이드
+        return None
+    return {"title": title, "lines": body, "tags": merge_tags(keywords), "rep": rep, "photos": photos,
+            "map_needed": map_needed, "place": place, "place_hint": title.split()[-1] if title.split() else "",
+            "notes": notes[:10]}
+
+
 # ── 발행 블록 ──
 
 def build_blocks(lines: List[str], photos: Dict[int, str], videos: Dict[int, Dict], clips: Dict[int, Dict],
-                 rep_photo: str = "") -> List[Dict]:
+                 rep_photo: str = "", head: Optional[List[str]] = None, foot: Optional[List[str]] = None) -> List[Dict]:
     """본문 줄 → 에디터 블록. 글은 표기 그대로 'styled' 블록으로, 사진·영상·클립은 각자 블록으로.
     - rep_photo: 대표 사진(썸네일)으로 지정할 사진 경로 → 그 사진이 처음 나오는 블록에 rep=True
-    - 대가성 문구 뒤에는 빈 줄 DISCLOSURE_GAP개, 사진·영상과 글 사이에는 빈 줄 MEDIA_GAP개"""
+    - 대가성 문구 뒤에는 빈 줄 DISCLOSURE_GAP개, 사진·영상과 글 사이에는 빈 줄 MEDIA_GAP개
+    - head·foot: 계정의 상단·하단 고정 문구(지도 포함). 상단은 맨 위 대가성 문구 바로 다음, 없으면 글 맨 앞"""
     blocks: List[Dict] = []
     text: List[str] = []
     rep_done = False
+    head_block = {"type": "fixed", "review": True, "lines": list(head) + [""]} if head else None
+    head_done = head_block is None
 
     def flush():
         if any(t.strip() for t in text):
@@ -872,9 +1021,18 @@ def build_blocks(lines: List[str], photos: Dict[int, str], videos: Dict[int, Dic
         skip_blank = False
         text.append(l)
         if is_disclosure(l):
-            text.extend([""] * DISCLOSURE_GAP)
+            if not head_done and not blocks and len(text) == 1:   # 공정위 문구가 항상 맨 위
+                flush()
+                blocks.append(head_block)
+                head_done = True
+            else:
+                text.extend([""] * DISCLOSURE_GAP)
             skip_blank = True
     flush()
+    if not head_done:
+        blocks.insert(0, head_block)
+    if foot:
+        blocks.append({"type": "fixed", "review": True, "lines": [""] + list(foot)})
 
     # 사진·영상·클립과 글 사이 간격
     media = {"single_image", "video", "clip"}
