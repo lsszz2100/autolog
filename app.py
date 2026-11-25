@@ -2016,6 +2016,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
               <button type="button" class="btn-outline" style="padding:6px 12px;font-size:12.5px;" onclick="postJSON('/api/review/clip_folder', {}).catch(e => alert(e.message))">📂 저장 폴더 열기</button>
             </div>
             <div class="user-box-hint" id="clip-saved" style="margin-top:6px;"></div>
+            <div id="clip-upload" style="margin-top:10px;padding:10px;border:1px solid #c7d2fe;background:#f8faff;border-radius:10px;text-align:left;font-size:12.5px;">
+              <b>📤 클립 크리에이터에 바로 올리기</b> <small style="color:#64748b;">(설명은 위 '클립 설명란' 내용)</small>
+              <div class="rv-clip-opts">
+                <label>장소 태그 <input type="text" id="clip_up_place" maxlength="60" placeholder="가게 이름 (비우면 장소 없음)" style="width:180px;padding:4px 8px;font-size:12.5px;"></label>
+                <label>카테고리 <select id="clip_up_cat"></select></label>
+                <label><input type="checkbox" id="clip_up_public" checked style="width:auto;margin:0 4px 0 0;">전체 공개 <small style="color:#64748b;font-weight:400;">(끄면 나만 보기)</small></label>
+                <label><input type="checkbox" id="clip_up_ai" checked style="width:auto;margin:0 4px 0 0;">AI 활용 표시</label>
+              </div>
+              <button type="button" id="clip-up-btn" class="btn-green" style="width:100%;margin-top:8px;" onclick="clipUpload(this)">📤 지금 계정으로 클립 올리기</button>
+              <div id="clip-up-status" class="user-box-hint" style="display:none;margin-top:6px;"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -4388,6 +4399,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           const v = document.getElementById('clip-video');
           v.src = '/api/review/clip_file?id=' + encodeURIComponent(d.result.id) + '&_=' + Date.now() + '#t=0.1';
           document.getElementById('clip-result').style.display = 'block';
+          clipUploadPrepare();
           document.getElementById('clip-saved').innerText = d.result.saved ? '저장 위치: ' + d.result.saved : '';
           if (clipRules) renderClipGuide({ rules: clipRules, checks: d.result.checks }, true);
         } else {
@@ -4404,6 +4416,46 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       renderReviewVideos();
       renderClipScenes();
       alert(`영상 ${rvVideos.length}번으로 넣었습니다. 본문에 [영상:${rvVideos.length}] 자리를 넣으면 그 자리에 들어갑니다.`);
+    }
+
+    const CLIP_CATS = ['플레이스', '여행', '푸드', '일상기록', '엔터', '음악', '뷰티', '패션', '프로스포츠', '아웃도어, 운동',
+      '미술', '경제', '과학', '리빙, 홈', '동물', '라이프스타일', '테크', '문학', '인문, 교양', '이슈', '건강, 의학', '게임',
+      '유머', '교육', '어학, 외국어', '자동차', '쇼핑', '법', '커리어', '생산성', '라이프 이벤트', '시상식, 행사'];
+    function clipUploadPrepare() {
+      const sel = document.getElementById('clip_up_cat');
+      if (!sel.options.length) sel.innerHTML = CLIP_CATS.map(c => `<option>${esc(c)}</option>`).join('');
+      const place = document.getElementById('clip_up_place');
+      if (!place.value.trim()) place.value = document.getElementById('rv_brand').value.trim();
+      sel.value = place.value.trim() ? '플레이스' : '일상기록';
+      document.getElementById('clip-up-status').style.display = 'none';
+    }
+    async function clipUpload(btn) {
+      if (!clipLast) { alert('클립을 먼저 만들어 주세요.'); return; }
+      const desc = document.getElementById('clip_desc').value.trim();
+      if (!desc) { alert('클립 설명란을 채워 주세요. (설명은 필수입니다)'); return; }
+      const pub = document.getElementById('clip_up_public').checked;
+      const place = document.getElementById('clip_up_place').value.trim();
+      if (!confirm(`지금 선택된 계정으로 클립을 올립니다.\n${pub ? '전체 공개' : '나만 보기'} · 장소 ${place || '없음'} · 카테고리 ${document.getElementById('clip_up_cat').value}`)) return;
+      const st = document.getElementById('clip-up-status');
+      btn.disabled = true; st.style.display = 'block'; st.innerText = '⏳ 올리기 시작...';
+      try {
+        await postJSON('/api/review/clip_upload', { id: clipLast.id, description: desc, place, public: pub,
+          category: document.getElementById('clip_up_cat').value, ai: document.getElementById('clip_up_ai').checked,
+          sponsor: document.getElementById('clip_sponsor').checked });
+      } catch (e) { alert(e.message || e); btn.disabled = false; st.style.display = 'none'; return; }
+      const tick = async () => {
+        let d;
+        try { d = await postJSON('/api/review/clip_status', {}); } catch (e) { return setTimeout(tick, 3000); }
+        if (d.state === 'running') { st.innerText = `⏳ ${d.msg || '올리는 중...'} (${d.pct || 0}%)`; return setTimeout(tick, 1500); }
+        btn.disabled = false;
+        if (d.state === 'done' && d.result && d.result.uploaded) {
+          const p = d.result.place;
+          st.innerHTML = `✅ 클립 등록 완료 (${d.result.public ? '전체 공개' : '나만 보기'})` + (p ? ` · 📍 ${esc(p.name)}` : (place ? ' · 장소 검색 결과가 없어 장소 없이 올렸습니다' : ''));
+        } else {
+          st.innerHTML = '<span style="color:#dc2626;">❌ ' + esc(d.error || '클립을 올리지 못했습니다.') + '</span>';
+        }
+      };
+      setTimeout(tick, 1500);
     }
 
     async function reviewPublish(btn) {
@@ -6038,6 +6090,55 @@ class RequestHandler(BaseHTTPRequestHandler):
 
             if not clip_maker.start_job(job):
                 return self._send_json({"ok": False, "message": "클립을 만드는 중입니다. 끝난 뒤 다시 눌러 주세요."}, 409)
+            self._send_json({"ok": True})
+
+        elif url.path == "/api/review/clip_upload":
+            # 만든 클립을 클립 크리에이터에 올림 (백그라운드, 진행은 clip_status로)
+            import clip_maker
+            import clip_upload
+            import user_media
+            path = user_media.video_path(str(payload.get("id", "")))
+            if not path:
+                return self._send_json({"ok": False, "message": "올릴 클립 파일을 찾지 못했습니다. 클립을 다시 만들어 주세요."}, 400)
+            desc = str(payload.get("description") or "").strip()[:clip_upload.DESC_MAX]
+            if not desc:
+                return self._send_json({"ok": False, "message": "클립 설명을 넣어 주세요."}, 400)
+            opts = dict(category=str(payload.get("category") or "일상기록"), category2=str(payload.get("category2") or ""),
+                        place=str(payload.get("place") or "").strip()[:60], public=bool(payload.get("public", True)),
+                        ai_used=bool(payload.get("ai", True)), sponsored=bool(payload.get("sponsor")))
+            cfg = load_config()
+            if not cfg.get("naver_id"):
+                return self._send_json({"ok": False, "message": "블로그 계정을 먼저 추가해 주세요."}, 400)
+            why = _lock_account_browser()
+            if why:
+                return self._send_json({"ok": False, "message": why}, 409)
+
+            def job(progress):
+                from playwright.sync_api import sync_playwright
+                from browser import launch_naver_context, first_page
+                from auth import is_logged_in, check_login_status, login_naver
+                try:
+                    with sync_playwright() as pw:
+                        ctx = launch_naver_context(pw, headless=bool(cfg.get("headless", False)),
+                                                   profile_dir=config_mod.account_profile_dir(cfg))
+                        try:
+                            page = first_page(ctx)
+                            progress("로그인 확인 중...", 5)
+                            if not is_logged_in(ctx) or not check_login_status(page):
+                                if not login_naver(page, cfg.get("naver_id"), cfg.get("naver_pw")):
+                                    raise clip_maker.ClipError(f"계정 {cfg.get('naver_id')} 로그인에 실패했습니다. [로그인] 버튼으로 다시 로그인해 주세요.")
+                            page.set_viewport_size({"width": 1400, "height": 950})
+                            res = clip_upload.upload(page, path, desc, progress=progress, **opts)
+                        finally:
+                            ctx.close()
+                finally:
+                    TASK_LOCK.release()
+                return {"uploaded": True, "url": res["url"], "public": opts["public"],
+                        "place": res["place"], "account": cfg.get("naver_id")}
+
+            if not clip_maker.start_job(job):
+                TASK_LOCK.release()
+                return self._send_json({"ok": False, "message": "클립 작업이 진행 중입니다. 끝난 뒤 다시 눌러 주세요."}, 409)
             self._send_json({"ok": True})
 
         elif url.path == "/api/review/clip_status":
