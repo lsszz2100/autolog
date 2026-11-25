@@ -38,7 +38,9 @@ DISCLOSURE_COLOR = "#8a8a8a"    # 대가성(협찬·제품 제공) 문구: 연�
 DISCLOSURE_PX = 15              # 대가성(공정위) 문구 글자 크기 (본문 16보다 조금 작게)
 DISCLOSURE_GAP = 3              # 대가성 문구 뒤 빈 줄 수
 DEFAULT_DISCLOSURE = "업체로부터 제품(서비스)을 제공받아 작성한 솔직한 후기입니다."
-MEDIA_GAP = 1                   # 사진·영상·클립과 글 사이 빈 줄 수
+MEDIA_GAP = 2                   # 사진·영상·클립과 글 사이 빈 줄 수
+HEADING_GAP_BEFORE = 2          # 소제목(큰 글씨) 앞 빈 줄 수 (앞 문단과 구분)
+HEADING_GAP_AFTER = 1           # 소제목과 그 아래 본문 사이 빈 줄 수
 
 MEDIA_RE = re.compile(r"^\[(사진|영상|클립):\s*(\d{1,2})\]$")
 LINK_RE = re.compile(r"^\[링크:\s*(https?://\S+)\]$")
@@ -1044,12 +1046,35 @@ def parse_manuscript(text: str) -> Optional[Dict]:
 
 # ── 발행 블록 ──
 
+def space_headings(lines: List[str]) -> List[str]:
+    """읽기 좋게: 빈 줄 여러 개는 하나로, 소제목(## · 📍) 앞은 HEADING_GAP_BEFORE줄, 뒤는 HEADING_GAP_AFTER줄."""
+    out: List[str] = []
+    for l in lines:
+        if not l.strip():
+            if out and out[-1].strip():
+                out.append("")
+            continue
+        if is_heading(l) or emoji_heading(l):
+            while out and not out[-1].strip():
+                out.pop()
+            if out:
+                out.extend([""] * HEADING_GAP_BEFORE)
+            out.append(l)
+            out.extend([""] * HEADING_GAP_AFTER)
+            continue
+        out.append(l)
+    while out and not out[-1].strip():
+        out.pop()
+    return out
+
+
 def build_blocks(lines: List[str], photos: Dict[int, str], videos: Dict[int, Dict], clips: Dict[int, Dict],
                  rep_photo: str = "", head: Optional[List[str]] = None, foot: Optional[List[str]] = None) -> List[Dict]:
     """본문 줄 → 에디터 블록. 글은 표기 그대로 'styled' 블록으로, 사진·영상·클립은 각자 블록으로.
     - rep_photo: 대표 사진(썸네일)으로 지정할 사진 경로 → 그 사진이 처음 나오는 블록에 rep=True
     - 대가성 문구 뒤에는 빈 줄 DISCLOSURE_GAP개, 사진·영상과 글 사이에는 빈 줄 MEDIA_GAP개
     - head·foot: 계정의 상단·하단 고정 문구(지도 포함). 상단은 맨 위 대가성 문구 바로 다음, 없으면 글 맨 앞"""
+    lines = space_headings(lines)
     blocks: List[Dict] = []
     text: List[str] = []
     rep_done = False

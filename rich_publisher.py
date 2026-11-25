@@ -342,7 +342,7 @@ class RichSmartEditorPublisher(SmartEditorPublisher):
         if when:
             return self._finish_scheduled(when)
         if confirmed_url:
-            return confirmed_url
+            return self._like_own_post(confirmed_url)
 
         # 11. 실제 발행 글 URL 추출
         logger.info("발행 완료 대기 중... (PostView 및 logNo 감시)")
@@ -357,7 +357,7 @@ class RichSmartEditorPublisher(SmartEditorPublisher):
             if m:
                 published_url = f"https://blog.naver.com/{self.blog_id}/{m.group(1)}"
                 logger.info(f"🎉 N사 블로그 글 발행 성공! 정규 URL: {published_url}")
-                return published_url
+                return self._like_own_post(published_url)
         except Exception:
             pass
 
@@ -379,7 +379,7 @@ class RichSmartEditorPublisher(SmartEditorPublisher):
                 }
             """, self.blog_id)
             if extracted:
-                return extracted
+                return self._like_own_post(extracted)
         except Exception:
             pass
 

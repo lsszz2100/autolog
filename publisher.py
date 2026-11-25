@@ -1667,6 +1667,11 @@ class SmartEditorPublisher:
             raise RuntimeError("최근 글 목록에 글이 없습니다 (발행되지 않음).")
         raise PublishUnconfirmed("발행 여부를 확인하지 못했습니다. 블로그를 직접 확인한 뒤 다시 시도해 주세요.")
 
+    def _like_own_post(self, url: str) -> str:
+        """발행을 마친 글에 공감 하나 누르기. 실패해도 발행 결과에는 영향 없음. 받은 url 그대로 돌려준다."""
+        like_post(self.page, url)
+        return url
+
     def _finish_scheduled(self, dt: datetime) -> str:
         """예약 발행은 공개 URL이 아직 없으므로 'scheduled:{시각}|{예약 글 URL}' 을 반환합니다."""
         m = re.search(r"logNo=(\d{6,})", self.page.url)
@@ -1802,7 +1807,7 @@ class SmartEditorPublisher:
         if when:
             return self._finish_scheduled(when)
         if confirmed_url:
-            return confirmed_url
+            return self._like_own_post(confirmed_url)
 
         # 13. 실제 발행 완료 URL 대기 및 정밀 추출
         logger.info("발행 완료 대기 중... (PostView 및 logNo 감시)")
@@ -1817,7 +1822,7 @@ class SmartEditorPublisher:
             if m:
                 published_url = f"https://blog.naver.com/{self.blog_id}/{m.group(1)}"
                 logger.info(f"🎉 N사 블로그 글 발행 성공! 정규 URL: {published_url}")
-                return published_url
+                return self._like_own_post(published_url)
         except Exception:
             pass
 
@@ -1829,7 +1834,7 @@ class SmartEditorPublisher:
                 if m:
                     published_url = f"https://blog.naver.com/{self.blog_id}/{m.group(1)}"
                     logger.info(f"✔ 프레임 URL에서 실제 발행 글 URL 추출 성공: {published_url}")
-                    return published_url
+                    return self._like_own_post(published_url)
         except Exception:
             pass
 
@@ -1854,10 +1859,37 @@ class SmartEditorPublisher:
             if extracted:
                 published_url = extracted
                 logger.info(f"✔ 블로그 홈에서 실제 발행 글 URL 추출 성공: {published_url}")
-                return published_url
+                return self._like_own_post(published_url)
         except Exception as e:
             logger.warning(f"블로그 홈 URL 추출 실패: {e}")
 
         # 포스팅이 실제로 등록되지 않은 상태에서 블로그 홈 주소를 성공 URL인 것처럼 반환하는 행위 원천 차단
         self._save_diagnostic("publish_failed_no_postview")
         raise PublishUnconfirmed("스마트에디터 ONE 글 발행 후 실제 포스팅 URL(PostView)로 전환되지 않았습니다. 발행 버튼 클릭 상태를 확인해주세요.")
+
+
+def like_post(page, url: str) -> str:
+    """글(blog.naver.com/아이디/번호)에 공감 하나. 결과: liked · already · nobtn · fail · bad_url. 예외를 내지 않는다."""
+    m = re.search(r"blog\.naver\.com/([^/?#]+)/(\d{6,})", url or "")
+    if not m:
+        return "bad_url"
+    try:
+        page.goto(f"https://m.blog.naver.com/{m.group(1)}/{m.group(2)}", wait_until="domcontentloaded", timeout=20000)
+        page.wait_for_timeout(2500)
+        btn = page.locator("a.u_likeit_button._face, button.u_likeit_button, "
+                           "a[class*='likeit_button'], button[class*='likeit_button']").first
+        if btn.count() == 0:
+            logger.info(f"공감 단추를 찾지 못해 공감은 건너뜁니다: {url}")
+            return "nobtn"
+        if (btn.get_attribute("aria-pressed") or "") == "true" or "on" in (btn.get_attribute("class") or "").split():
+            logger.info(f"✔ 이미 공감한 글입니다: {url}")
+            return "already"
+        btn.scroll_into_view_if_needed()
+        page.wait_for_timeout(600)
+        btn.click()
+        page.wait_for_timeout(1200)
+        logger.info(f"✔ 발행한 글에 공감 1개를 눌렀습니다: {url}")
+        return "liked"
+    except Exception as e:
+        logger.info(f"공감을 누르지 못했습니다 (발행은 정상): {e}")
+        return "fail"

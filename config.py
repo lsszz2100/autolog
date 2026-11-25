@@ -420,6 +420,19 @@ def add_history(title: str, url: str, category: str = "", tags: str = "", schedu
     return new_item
 
 
+def mark_history_like(url: str, done: bool):
+    """예약 글 공감 결과 기록: 끝났으면 liked=True, 실패면 like_tries 하나 늘림."""
+    items = load_history()
+    for i in items:
+        if i.get("url") == url:
+            if done:
+                i["liked"] = True
+            else:
+                i["like_tries"] = int(i.get("like_tries") or 0) + 1
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(items, f, indent=2, ensure_ascii=False)
+
+
 def clear_history():
     """발행 이력 전체 삭제 (프로그램 목록만 지움. 블로그에 올라간 글은 그대로)."""
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:

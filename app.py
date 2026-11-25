@@ -618,6 +618,68 @@ def _keep_awake(on: bool):
         pass
 
 
+LIKE_CHECK_SEC = 600          # 예약 글 공감 확인 주기
+LIKE_DELAY_MIN = 5            # 예약 시각 뒤 이만큼 지나서 공감 (발행 반영 시간)
+LIKE_MAX_TRIES = 3
+_last_like_check = 0.0
+
+
+def due_scheduled_likes(items, now: datetime):
+    """공감할 예약 글: 예약 시각 + LIKE_DELAY_MIN 이 지났고, 3일 안이고, 아직 공감 안 했고, 시도 3번 미만."""
+    out = []
+    for i in items:
+        url, when = i.get("url") or "", i.get("scheduled_at") or ""
+        if not url or not when or i.get("liked") or int(i.get("like_tries") or 0) >= LIKE_MAX_TRIES:
+            continue
+        try:
+            t = datetime.strptime(when, "%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+        if t + timedelta(minutes=LIKE_DELAY_MIN) <= now <= t + timedelta(days=3):
+            out.append(i)
+    return out
+
+
+def run_scheduled_likes():
+    """예약 발행 글이 실제로 올라간 뒤 공감 하나씩. 계정별 브라우저 프로필로. TASK_LOCK 안에서 호출."""
+    global _last_like_check
+    if time.time() - _last_like_check < LIKE_CHECK_SEC:
+        return
+    _last_like_check = time.time()
+    try:
+        import neighbor_service      # 이웃 순회가 같은 프로필을 쓰는 중이면 다음에
+        if neighbor_service.NeighborBot.get_instance().state in ("running", "paused"):
+            return
+    except Exception:
+        pass
+    due = due_scheduled_likes(load_history(), datetime.now())
+    if not due:
+        return
+    import config as config_mod
+    from playwright.sync_api import sync_playwright
+    from browser import launch_naver_context, first_page
+    from publisher import like_post
+    cfg = load_config()
+    by_acc = {}
+    for i in due[:6]:
+        by_acc.setdefault(i.get("account") or cfg.get("active_account") or "", []).append(i)
+    for acc, posts in by_acc.items():
+        try:
+            with sync_playwright() as pw:
+                ctx = launch_naver_context(pw, headless=True, profile_dir=config_mod.account_profile_dir(cfg, acc or None))
+                try:
+                    page = first_page(ctx)
+                    for i in posts:
+                        r = like_post(page, i["url"])
+                        config_mod.mark_history_like(i["url"], r in ("liked", "already"))
+                finally:
+                    ctx.close()
+        except Exception as e:
+            logger.info(f"예약 글 공감을 다음에 다시 시도합니다 ({acc}): {e}")
+            for i in posts:
+                config_mod.mark_history_like(i["url"], False)
+
+
 def start_queue_worker():
     import schedule_queue
     schedule_queue.recover_after_restart()
@@ -631,6 +693,7 @@ def start_queue_worker():
                 continue
             try:
                 run_queue_once()
+                run_scheduled_likes()
             except Exception as e:
                 logger.error(f"예약 목록 처리 오류: {e}")
             finally:
