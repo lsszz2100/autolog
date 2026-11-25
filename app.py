@@ -4031,7 +4031,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     async function rvReadManuscript() {
       try {
         if (!await rvTryManuscript(document.getElementById('rv_content').value))
-          alert("본문 칸에 받은 원고를 붙여 넣어 주세요. ('제목:' 줄과 '서론' 또는 '1번 이미지' 줄이 있어야 합니다)");
+          alert("본문 칸에 받은 원고를 붙여 넣어 주세요. ('제목' 줄과 '서론' 또는 '1번 이미지'·'[사진1]' 같은 사진 자리 표시가 있어야 합니다)");
       } catch (e) { alert(e.message || e); }
     }
     function renderReviewPhotos() {

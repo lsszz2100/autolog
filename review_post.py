@@ -880,7 +880,7 @@ def prepare_direct(content: str, counts: Dict[str, int]) -> Tuple[List[str], Lis
 
 # ── 기자단 원고 양식 ──
 
-_MS_TITLE = re.compile(r"^제목\s*[:：]\s*(.+)$")
+_MS_TITLE = re.compile(r"^(?:포스팅\s*|글\s*|블로그\s*)?제목\s*[:：-]\s*(.+)$")
 _MS_KEYWORD = re.compile(r"^(?:메인\s*|필수\s*)?키워드\s*[:：]\s*(.+)$")
 _REP_RES = (re.compile(r"(?:대표\s*(?:사진|이미지)|썸네일)\D{0,8}?(\d{1,2})\s*번"),
             re.compile(r"(?:대표\s*(?:사진|이미지)|썸네일)\s*[:：]?\s*(\d{1,2})\s*$", re.M),
@@ -897,8 +897,37 @@ def rep_photo_no(text: str) -> int:
 
 
 _MS_PLACE = re.compile(r"^(?:지도|업체명?|상호명?|매장명?|가게|장소)\s*[:：]\s*(.+)$")
-_MS_SECTION = re.compile(r"^(?:서론|도입부?|인트로|본론|결론|마무리|아웃트로)\s*[:：]?$")
-_MS_IMAGE = re.compile(r"^(?:(\d{1,2})\s*번\s*(?:이미지|사진)|(?:이미지|사진)\s*(\d{1,2})\s*번?)(?:\s*[-–—:：]\s*.*)?$")
+_MS_SECTION = re.compile(r"^(?:서론|도입부?|인트로|본론\s*\d{0,2}|결론|마무리|아웃트로)\s*(?:[:：]\s*(.*))?$")
+_MS_IMAGE = re.compile(r"^#?\s*(?:(\d{1,2})\s*번\s*(?:이미지|사진)|(?:이미지|사진)\s*[:：]?\s*(\d{1,2})\s*번?)"
+                       r"(?:\s*(?:[-–—:：].*|\(.*\)|\[.*\]))?$")
+_MS_BULLET = re.compile(r"^(?:[■□●○◆◇▶▷►•·※✔✅☑★☆\-*]+|\d{1,2}[.)])\s*")
+_MS_WRAP = re.compile(r"^[\[(<【〈《「]\s*([^\])>】〉》」]{1,30}?)\s*[\])>】〉》」]\s*[:：-]?\s*(.*)$")
+
+
+def _ms_norm(line: str) -> str:
+    """원고 양식 줄 다듬기: 굵게(**)·앞머리 기호(■, -, 1.)를 떼고 '[제목] 글' → '제목: 글', '[사진1]' → '사진1'."""
+    s = re.sub(r"\*\*|__", "", (line or "").strip())
+    s = _MS_BULLET.sub("", s).strip()
+    m = _MS_WRAP.match(s)
+    if m:
+        s = f"{m.group(1)}: {m.group(2)}" if m.group(2) else m.group(1)
+    return s.strip()
+
+
+_MS_ORDER = re.compile(r"(해\s*주세요|(?<!안녕)하세요|바랍니다|주시면|드립니다|됩니다|부탁|필수|금지|주의|반드시|넣어|작성|해야|포함|기재|첨부|삽입|글자\s*수|자\s*이상)")
+
+
+def _ms_prose(s: str) -> bool:
+    """지시가 아닌 본문 문장처럼 보이는 줄 (적당히 길고 지시 말투가 없음)."""
+    return len(s) >= 25 and not _MS_ORDER.search(s) and not re.match(r"^[^\s:：]{1,12}\s*[:：]", s)
+
+
+def _ms_section(s: str):
+    return _MS_SECTION.match(_ms_norm(s))
+
+
+def _ms_image(s: str):
+    return _MS_IMAGE.match(_ms_norm(s))
 
 
 _MAP_GENERIC = set("""맛집 카페 추천 후기 리뷰 데이트 놀거리 가볼만한곳 가볼만한 곳 코스 여행 핫플 분위기 연인과 연인 가족 아이와
@@ -938,15 +967,25 @@ def parse_manuscript(text: str) -> Optional[Dict]:
     """받은 기자단 원고 → 지시(제목·키워드·대표사진·지도)와 본문. 본문 문장은 한 글자도 바꾸지 않는다.
     '제목:' 줄과 서론 또는 'N번 이미지' 줄이 있어야 이 양식으로 본다. 아니면 None."""
     raw = [l.rstrip() for l in (text or "").replace("\r\n", "\n").split("\n")]
-    start = next((i for i, l in enumerate(raw) if _MS_SECTION.match(l.strip()) or _MS_IMAGE.match(l.strip())), None)
+    start = next((i for i, l in enumerate(raw) if _ms_section(l) or _ms_image(l)), None)
     if start is None:
         return None
     title, place, rep, map_needed = "", "", 0, False
     keywords: List[str] = []
     notes: List[str] = []
-    for l in raw[:start]:
-        s = l.strip()
+    want_title = False
+    for i, l in enumerate(raw[:start]):
+        s = _ms_norm(l)
         if not s:
+            continue
+        if title and _ms_prose(s):     # 제목 다음 '서론' 표시 없이 바로 시작한 도입 글은 본문
+            start = i
+            break
+        if want_title:                  # '제목' 한 줄 다음 줄이 제목
+            title, want_title = re.sub(r"\*\*|__", "", l).strip(), False   # '[성수] 카페' 같은 제목은 다듬지 않음
+            continue
+        if re.fullmatch(r"(?:포스팅\s*|글\s*|블로그\s*)?제목\s*[:：]?", s):
+            want_title = True
             continue
         m = _MS_TITLE.match(s)
         if m:
@@ -975,9 +1014,12 @@ def parse_manuscript(text: str) -> Optional[Dict]:
     photos: List[int] = []
     for l in raw[start:]:
         s = l.strip()
-        if _MS_SECTION.match(s):
+        m = _ms_section(l)
+        if m:
+            if m.group(1):              # '서론: 첫 문장…' 은 콜론 뒤 글을 본문으로
+                body.append(m.group(1).strip())
             continue
-        m = _MS_IMAGE.match(s)
+        m = _ms_image(l)
         if m:
             n = int(m.group(1) or m.group(2))
             photos.append(n)
