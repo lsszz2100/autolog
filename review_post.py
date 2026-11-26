@@ -67,13 +67,20 @@ def media_marker(line: str) -> Optional[Tuple[str, int]]:
     return (m.group(1), int(m.group(2))) if m else None
 
 
-MAP_RE = re.compile(r"^\[지도(?::\s*([^\]]{1,60}))?\]$")
+MAP_RE = re.compile(r"^\[지도(\(자동\))?(?::\s*([^\]]{1,60}))?\]$")
+AUTO_MAP = "[지도(자동):{}]"     # 원고에서 찾아 넣은 지도: 못 찾으면 지도 없이 발행
 
 
 def map_marker(line: str) -> Optional[str]:
-    """[지도] → '' (설정의 지도 검색어), [지도:장소명] → 장소명. 지도 줄이 아니면 None."""
+    """[지도] → '' (설정의 지도 검색어), [지도:장소명]·[지도(자동):장소명] → 장소명. 지도 줄이 아니면 None."""
     m = MAP_RE.match(norm_marker(line))
-    return (m.group(1) or "").strip() if m else None
+    return (m.group(2) or "").strip() if m else None
+
+
+def map_optional(line: str) -> bool:
+    """[지도(자동):…] 줄인지 (지도를 못 넣어도 발행은 계속)."""
+    m = MAP_RE.match(norm_marker(line))
+    return bool(m and m.group(1))
 
 
 def parse_inline(line: str) -> List[Tuple[str, Dict]]:
@@ -936,7 +943,9 @@ _MAP_GENERIC = set("""맛집 카페 추천 후기 리뷰 데이트 놀거리 가
 친구와 특별한 저녁 점심 아침 브런치 디저트 솔직 솔직후기 방문 방문기 내돈내산 체험 체험단 모임 회식 가성비 메뉴 근처 주변 신상 오픈
 예약 주차 뷰 뷰맛집 정보 총정리 꿀팁 소개 리스트 베스트 인생 기념일 생일 나들이 산책 숙소 호텔 펜션 식당 레스토랑
 술집 이자카야 고깃집 한식 양식 일식 중식 빵집 베이커리 디저트카페 오마카세 웨이팅 줄서는""".split())
-_PARTICLE_END = re.compile(r"(과|와|한|의|에서|으로|로|을|를|은|는|도|에|랑|이랑)$")
+_PARTICLE_END = re.compile(r"(과|와|한|의|에서|으로|로|을|를|은|는|도|에|랑|이랑|"
+                           r"어요|아요|해요|에요|예요|네요|세요|죠|습니다|니다|었다|았다|했다|왔다|봤다|갔다|"
+                           r"기록|방문기|탐방|투어)$")    # 조사·말끝 ('다녀왔어요')은 가게 이름이 아님
 
 
 def map_queries(title: str, keywords: List[str], place: str = "") -> List[str]:
@@ -965,7 +974,111 @@ def map_queries(title: str, keywords: List[str], place: str = "") -> List[str]:
     return [q for i, q in enumerate(out) if q and q not in out[:i]]
 
 
-def parse_manuscript(text: str) -> Optional[Dict]:
+# ── 원고에서 장소 자동 찾기 (내 원고 그대로) ──
+
+_PLACE_LINE = re.compile(r"^[📍📌🏠🏪🍽☕🗺️\s]*(?:상호명?|가게\s*(?:이름|명)?|매장\s*(?:이름|명)?|업체\s*(?:이름|명)?|"
+                         r"식당\s*(?:이름)?|카페\s*(?:이름)?|장소|위치|주소|place)\s*[:：]\s*(.+)$", re.I)
+_PIN_LINE = re.compile(r"^[📍📌]\s*([^:：]{2,30})$")
+_SIDO = "서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충북|충남|충청북도|충청남도|전북|전남|전라북도|전라남도|경북|경남|경상북도|경상남도|제주"
+_ADDR = re.compile(rf"((?:{_SIDO})\S*\s+(?:\S+\s+){{0,3}}?\S+(?:로|길)\s*\d+(?:-\d+)?(?:번길\s*\d+(?:-\d+)?)?)")
+_PLACE_HINT = re.compile(r"맛집|카페|식당|레스토랑|술집|베이커리|빵집|브런치|오마카세|고깃집|펜션|호텔|숙소|글램핑|캠핑장|"
+                         r"가볼만한|여행|핫플|영업\s*시간|주차|웨이팅|메뉴판|매장|방문|미용실|네일|피부과|병원|헬스|필라테스|공방|키즈카페")
+
+
+def _clean_place(s: str) -> str:
+    s = re.sub(r"\*\*|__|==|\{\{[^:{}]{1,4}:|\}\}", "", s or "")
+    s = re.split(r"\s+[-–—|/]\s+|\s*[(（]", s)[0]        # '어니언 성수 (성수역 2번 출구)' → '어니언 성수'
+    return re.sub(r"[\"'“”‘’<>\[\]]", "", s).strip()[:30]
+
+
+def _addr_area(addr: str) -> str:
+    """주소에서 지도 검색에 붙일 구·군·시 이름 ('서울 성동구 아차산로 9' → '성동구')."""
+    toks = addr.split()
+    return next((t for t in toks[1:] if re.fullmatch(r"\S{1,6}(?:구|군)", t)), "") or \
+        next((t for t in toks[1:] if re.fullmatch(r"\S{1,6}시", t)), "")
+
+
+def _title_place(title: str, keywords: Optional[List[str]]) -> List[str]:
+    """제목에서 가게 이름 검색어. '홍대 맛집'처럼 지역 이름 하나뿐이면 가게를 알 수 없어 []."""
+    regions = re.findall(r"[\[(【]([^\])】]{2,10})[\])】]", title or "")      # '[연남동] 카페 리브레' → 연남동
+    q = map_queries(title, list(keywords or []) + regions)
+    if not q:
+        return []
+    store = q[-1]
+    words = [t for t in re.split(r"[\s,·|/]+", re.sub(r"[\[\](){}<>\"'!?~]", " ", title or "")) if t]
+    others = [t for t in words if len(t) >= 2 and t not in _MAP_GENERIC and not _PARTICLE_END.search(t)
+              and t not in store.split()]
+    if " " not in store and not store.endswith("점") and not others and not regions:
+        return []           # 제목에 이름 같은 말이 하나뿐 (지역인지 가게인지 모름)
+    return q
+
+
+def find_place(title: str, lines: List[str], keywords: Optional[List[str]] = None) -> Dict:
+    """원고(제목·본문)에서 지도에 넣을 장소 찾기. 상호·📍 줄 > 주소 > 제목 순.
+    반환: {'store','address','queries'(앞에서부터 검색, 마지막이 가게 이름), 'source'}. 못 찾으면 queries 빈 목록."""
+    store, address = "", ""
+    for l in lines or []:
+        s = norm_marker(l)
+        if not s or s.startswith("[") or s.startswith("#") or len(s) > 200:
+            continue
+        m = _PLACE_LINE.match(s)
+        if m:
+            v = m.group(1).strip()
+            key = s[:m.start(1)]
+            if re.search(r"주소|위치", key):
+                a = _ADDR.search(v)
+                if a and not address:
+                    address = a.group(1).strip()
+                elif re.search(r"주소", key) and not address and re.search(r"(?:로|길)\s*\d", v):
+                    address = v[:60]
+            elif not store:
+                store = _clean_place(v)
+            continue
+        m = _PIN_LINE.match(s)
+        if m and not store:
+            v = m.group(1).strip()
+            a = _ADDR.search(v)
+            if a:
+                address = address or a.group(1).strip()
+            elif not re.search(r"(?:역|출구)\s*\d|도보|분\s*거리", v):
+                store = _clean_place(v)
+            continue
+        if not address and len(s) <= 120:
+            a = _ADDR.search(s)
+            if a:
+                address = a.group(1).strip()
+    area = _addr_area(address) if address else ""
+    if store:
+        q = [f"{area} {store}" if area and area not in store else "", store]
+        source = "store"
+    else:
+        tq = _title_place(title, keywords)
+        text = " ".join([title or ""] + list(keywords or []) + [l for l in (lines or [])[:80]])
+        if address:         # 주소만 있으면 제목의 가게 이름을 그 동네에서 찾고, 안 되면 주소로
+            q = ([f"{area} {tq[-1]}" if area else tq[0]] if tq else []) + [address]
+            source = "address"
+        else:
+            q = tq if _PLACE_HINT.search(text) else []
+            source = "title" if q else ""
+    q = [x for i, x in enumerate(q) if x and x not in q[:i]]
+    return {"store": store, "address": address, "queries": q, "source": source}
+
+
+def auto_map_line(title: str, lines: List[str], keywords: Optional[List[str]] = None) -> str:
+    """원고에 지도 줄이 없을 때 넣을 [지도(자동):…] 줄. 장소를 못 찾으면 ''."""
+    if any(map_marker(l) is not None for l in lines or []):
+        return ""
+    q = find_place(title, lines, keywords)["queries"]
+    joined = ""
+    for x in q:          # 60자 안에서 '|'로 잇기
+        nxt = f"{joined}|{x}" if joined else x
+        if len(nxt) > 60:
+            break
+        joined = nxt
+    return AUTO_MAP.format(joined) if joined else ""
+
+
+def parse_manuscript(text: str, auto_map: bool = True) -> Optional[Dict]:
     """받은 기자단 원고 → 지시(제목·키워드·대표사진·지도)와 본문. 본문 문장은 한 글자도 바꾸지 않는다.
     '제목:' 줄과 서론 또는 'N번 이미지' 줄이 있어야 이 양식으로 본다. 아니면 None."""
     raw = [l.rstrip() for l in (text or "").replace("\r\n", "\n").split("\n")]
@@ -1034,13 +1147,20 @@ def parse_manuscript(text: str) -> Optional[Dict]:
         body.append(l if s else "")
     while body and not body[-1]:
         body.pop()
-    queries = map_queries(title, keywords, place) if map_needed else []
-    if map_needed:      # 상호를 안 줬으면 제목·키워드로 찾은 검색어들 ('|'로 구분, 앞에서부터 시도)
+    queries: List[str] = []
+    map_auto = ""
+    if map_needed:      # 상호를 안 줬으면 본문의 상호·주소, 그다음 제목·키워드로 찾은 검색어들 ('|'로 구분, 앞에서부터 시도)
+        queries = [place] if place else (find_place(title, body, keywords)["queries"] or map_queries(title, keywords))
         body += ["", f"[지도:{'|'.join(queries)[:60]}]" if queries else "[지도]"]
+    elif auto_map:      # 지도 지시가 없어도 원고에서 가게·주소를 찾으면 지도를 넣는다 (못 찾으면 지도 없이 발행)
+        map_auto = AUTO_MAP.format(place) if place else auto_map_line(title, body, keywords)
+        if map_auto:
+            queries = map_marker(map_auto).split("|")
+            body += ["", map_auto]
     if body_chars(body) < 100:         # 본문 문장이 없으면 원고가 아니라 작성 가이드
         return None
     return {"title": title, "lines": body, "tags": merge_tags(keywords), "rep": rep, "photos": photos,
-            "map_needed": map_needed, "place": place, "map_queries": queries,
+            "map_needed": map_needed, "map_auto": bool(map_auto), "place": place, "map_queries": queries,
             "notes": notes[:10]}
 
 

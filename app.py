@@ -2002,7 +2002,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             <div id="rv-checklist" style="display:none; margin-top:10px; font-size:12px; color:#475569; background:#f8fafc; border-radius:8px; padding:8px 10px;"></div>
           </div>
           <div id="rv-direct-box" style="display:none;">
-            <div class="user-box-hint">아래 [제목]·[본문]·[해시태그]에 쓴 그대로 올립니다. 본문에 사진 자리([사진:1])가 없으면 올린 사진을 문단 사이에 1번부터 차례대로 넣습니다.</div>
+            <div class="user-box-hint">아래 [제목]·[본문]·[해시태그]에 쓴 그대로 올립니다. 본문에 사진 자리([사진:1])가 없으면 올린 사진을 문단 사이에 1번부터 차례대로 넣습니다. 본문에 가게 이름(상호·📍 줄)이나 주소가 있으면 글 끝에 지도도 자동으로 넣습니다.</div>
             <button type="button" class="btn-outline" style="width:100%; margin-top:8px;" onclick="rvReadManuscript()">📄 받은 원고 양식 읽기 (제목·키워드·대표사진·지도·N번 이미지)</button>
             <div id="rv-ms-note" style="display:none; margin-top:8px; font-size:12px; color:#475569; background:#f8fafc; border-radius:8px; padding:8px 10px;"></div>
 
@@ -2126,6 +2126,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           <div style="display:flex; flex-wrap:wrap; gap:14px; align-items:center; font-size:13px; margin-bottom:10px;">
             <label style="display:flex; align-items:center; gap:6px; margin:0;"><input type="checkbox" id="rv_center" checked style="width:auto; margin:0;"> 글 전체 가운데 정렬</label>
             <label style="display:flex; align-items:center; gap:6px; margin:0;"><input type="checkbox" id="rv_public" checked style="width:auto; margin:0;"> 전체 공개</label>
+            <label style="display:flex; align-items:center; gap:6px; margin:0;" title="내 원고 그대로: 본문의 상호·📍·주소·제목에서 가게를 찾아 글 끝에 지도를 넣습니다. 못 찾으면 지도 없이 발행"><input type="checkbox" id="rv_automap" checked style="width:auto; margin:0;"> 📍 원고에서 가게 찾아 지도 자동</label>
             <label style="display:flex; align-items:center; gap:6px; margin:0;">예약 <input type="datetime-local" id="rv_schedule" step="600" style="width:auto; padding:4px 6px;"></label>
           </div>
           <button type="button" id="rv-publish-btn" class="btn-green" style="width:100%;" onclick="reviewPublish(this)">🚀 발행하기 (예약 시각을 넣으면 예약 발행)</button>
@@ -4017,7 +4018,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       let n = 0;
       for (const raw of document.getElementById('rv_content').value.split('\n')) {
         let s = raw.trim();
-        if (!s || /^\[(사진|영상|클립):\s*\d{1,2}\]$|^\[링크:\s*https?:\/\/\S+\]$|^\[스티커(:\s*(인사|포인트|주의|감사))?\]$|^\[구분선\]$|^\[지도(:[^\]]{1,60})?\]$/.test(s)) continue;
+        if (!s || /^\[(사진|영상|클립):\s*\d{1,2}\]$|^\[링크:\s*https?:\/\/\S+\]$|^\[스티커(:\s*(인사|포인트|주의|감사))?\]$|^\[구분선\]$|^\[지도(\(자동\))?(:[^\]]{1,60})?\]$/.test(s)) continue;
         if (s.startsWith('## ')) s = s.slice(3); else if (s.startsWith('> ')) s = s.slice(2);
         n += rvPlain(s).replace(/\s+/g, '').length;
       }
@@ -4075,6 +4076,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       const n = (d.photos || []).length;
       const rows = [d.title ? `제목 그대로: ${esc(d.title)}` : '⚠️ 제목 줄이 없어 제목을 직접 넣어 주세요', `본문 그대로, 이미지 자리 ${n}곳`,
         d.rep ? `대표사진: ${d.rep}번` : '', d.map_needed ? `지도: ${placeMsg ? esc(placeMsg) : '⚠️ 가게 이름 필요'}` : '',
+        d.map_auto ? `지도 자동: 원고에서 찾은 ${esc((d.map_queries || []).map(q => "'" + q + "'").join(' → '))} (다른 가게면 본문 끝 [지도(자동):…] 줄을 고치거나 지워 주세요, 못 찾으면 지도 없이 발행)` : '',
         (d.tags || []).length ? `키워드: ${esc(d.tags.join(', '))}` : ''].filter(Boolean).map(x => '✔ ' + x);
       (d.notes || []).forEach(x => rows.push('⚠️ 처리하지 못한 지시: ' + esc(x)));
       (d.banned || []).forEach(x => rows.push('🚫 금지 키워드 ' + esc(x)));
@@ -4083,7 +4085,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       box.innerHTML = '<b>받은 원고 반영 확인</b><br>' + rows.join('<br>'); box.style.display = 'block';
     }
     async function rvTryManuscript(text) {
-      const d = await postJSON('/api/review/parse', { text });
+      const d = await postJSON('/api/review/parse', { text, auto_map: document.getElementById('rv_automap').checked });
       if (!d.found) return false;
       rvApplyManuscript(d);
       return true;
@@ -4537,6 +4539,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       try {
         await postJSON('/api/review/publish', {
           mode: rvMode, manuscript: rvManuscript, title, content, tags: document.getElementById('rv_tags').value,
+          auto_map: document.getElementById('rv_automap').checked,
           category: document.getElementById('post_category').value.trim(),
           center: document.getElementById('rv_center').checked, public_open: document.getElementById('rv_public').checked,
           schedule_at, ...media });
@@ -6024,7 +6027,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             text = payload.get("text", "")
             if not isinstance(text, str) or len(text) > 60000:
                 return self._send_json({"ok": False, "message": "잘못된 입력 형식"}, 400)
-            d = review_post.parse_manuscript(text)
+            d = review_post.parse_manuscript(text, auto_map=payload.get("auto_map", True) is not False)
             if not d:
                 return self._send_json({"ok": True, "found": False})
             hits = review_post.banned_hits(d["title"], d["lines"], d["tags"], config_mod.banned_keywords())
@@ -6053,6 +6056,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                 if nums and max(nums) > len(photos):
                     return self._send_json({"ok": False, "message": f"원고에 {max(nums)}번 이미지까지 있는데 사진은 {len(photos)}장입니다. 사진을 번호 순서대로 올려 주세요."}, 400)
             lines, body_tags = review_post.prepare_direct(content, counts)
+            if mode == "direct" and payload.get("auto_map", True):   # 내 원고: 지도 줄이 없으면 원고에서 가게·주소를 찾아 지도
+                _auto = review_post.auto_map_line(title, lines, review_post.merge_tags(review_post.parse_tags(tags), body_tags))
+                if _auto:
+                    lines = lines + ["", _auto]
+                    logger.info(f"📍 원고에서 장소를 찾아 지도를 넣습니다: {review_post.map_marker(_auto)}")
             _cfg = load_config()
             if any(review_post.map_marker(l) == "" for l in lines) and not (_cfg.get("map_query") or "").strip():
                 return self._send_json({"ok": False, "message": "지도에 넣을 가게 이름이 없습니다. 본문의 [지도] 줄을 [지도:가게 이름]으로 고쳐 주세요."}, 400)

@@ -630,9 +630,13 @@ class RichSmartEditorPublisher(SmartEditorPublisher):
                 flush()
                 tries = [x.strip() for x in (q or self.map_query).split("|") if x.strip()]
                 store = tries[-1] if tries else ""
-                if not any(self._insert_place_map(x, prefer=store) for x in tries):   # 요구한 지도가 빠진 채 발행 금지
-                    raise RuntimeError(f"지도를 넣지 못했습니다 (검색어: {', '.join(tries) or '없음'}). "
-                                       f"본문의 [지도:…] 줄에 정확한 가게 이름을 넣어 주세요.")
+                if not any(self._insert_place_map(x, prefer=store) for x in tries):
+                    if rp.map_optional(s):      # 원고에서 찾아 넣은 지도는 못 찾으면 빼고 발행
+                        logger.info(f"ℹ️ 원고에서 찾은 장소로 지도를 찾지 못해 지도 없이 발행합니다 (검색어: {', '.join(tries)})")
+                        continue
+                    raise RuntimeError(                 # 가이드·원고가 요구한 지도가 빠진 채 발행 금지
+                        f"지도를 넣지 못했습니다 (검색어: {', '.join(tries) or '없음'}). "
+                        f"본문의 [지도:…] 줄에 정확한 가게 이름을 넣어 주세요.")
                 component(True)
                 continue
             m = rp.LINK_RE.match(s)
