@@ -780,7 +780,7 @@ def review_photo_list(photo_ids) -> list:
 
 
 def review_video_map(videos) -> dict:
-    """[{id, title}] → {번호: {path, title}} (올린 순서)."""
+    """[{id, title, pos?}] → {번호: {path, title, pos?}} (올린 순서)."""
     import user_media
     out = {}
     for v in (videos if isinstance(videos, list) else [])[:REVIEW_MAX_VIDEOS]:
@@ -788,7 +788,10 @@ def review_video_map(videos) -> dict:
             continue
         path = user_media.video_path(str(v.get("id", "")))
         if path:
-            out[len(out) + 1] = {"path": path, "title": str(v.get("title") or "")[:40]}
+            item = {"path": path, "title": str(v.get("title") or "")[:40]}
+            if v.get("pos") in ("top", "middle", "end"):      # 자리 고정 (처음·중간·끝) — 원고의 [영상:N] 자리 대신
+                item["pos"] = v["pos"]
+            out[len(out) + 1] = item
     return out
 
 
@@ -2049,6 +2052,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
               <option value="male_friendly">남성 · 친근하게</option><option value="male_calm">남성 · 차분한 정보형</option><option value="male_upbeat">남성 · 경쾌하게</option>
               <option value="none">나레이션 없음 (자막만)</option></select></label>
             <label><input type="checkbox" id="clip_sponsor" style="width:auto;margin:0 4px 0 0;">협찬 표시 <input type="text" id="clip_sponsor_text" value="제품 제공 · 협찬" maxlength="20" style="width:130px;padding:4px 8px;font-size:12px;"></label>
+            <label title="만든 클립을 이 글 안에 넣을 자리. 만든 뒤에도 바꿀 수 있습니다">블로그에 넣기 <select id="clip_blog_pos" onchange="clipPosChanged()">
+              <option value="">넣지 않음</option><option value="top">처음 (대가성 문구·인용구 바로 뒤)</option>
+              <option value="middle">중간</option><option value="end">끝 (태그 앞)</option><option value="manual">본문의 [영상:N] 자리</option></select></label>
           </div>
           <div style="display:flex;gap:6px;margin-top:8px;">
             <button type="button" id="clip-script-btn" class="btn-outline" style="flex:1;" onclick="clipScript(this)">✍️ AI로 클립 대본 만들기 (자막·나레이션)</button>
@@ -2075,9 +2081,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           <div id="clip-result" style="display:none;margin-top:10px;text-align:center;">
             <video id="clip-video" controls playsinline preload="metadata" style="width:100%;max-width:300px;border-radius:12px;background:#000;"></video>
             <div style="display:flex;gap:6px;justify-content:center;margin-top:8px;flex-wrap:wrap;">
-              <button type="button" class="btn-outline" style="padding:6px 12px;font-size:12.5px;" onclick="clipAddToPost()">➕ 글에 넣기 (영상 목록에 추가)</button>
               <button type="button" class="btn-outline" style="padding:6px 12px;font-size:12.5px;" onclick="postJSON('/api/review/clip_folder', {}).catch(e => alert(e.message))">📂 저장 폴더 열기</button>
             </div>
+            <div class="user-box-hint" id="clip-pos-note" style="margin-top:6px;"></div>
             <div class="user-box-hint" id="clip-saved" style="margin-top:6px;"></div>
             <div id="clip-upload" style="margin-top:10px;padding:10px;border:1px solid #c7d2fe;background:#f8faff;border-radius:10px;text-align:left;font-size:12.5px;">
               <b>📤 클립 크리에이터에 바로 올리기</b> <small style="color:#64748b;">(설명은 위 '클립 설명란' 내용)</small>
@@ -4196,21 +4202,25 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       for (let k = i + 2; k <= arr.length + 1; k++) map[k] = k - 1;
       rvRenumber(kind, map);
       if (it && it.id && kind === '사진') postJSON('/api/delete_photo', { id: it.id }).catch(() => {});
-      if (it && it.id && kind === '영상') postJSON('/api/delete_video', { id: it.id }).catch(() => {});
+      if (it && it.id && kind === '영상' && !it.fromClip) postJSON('/api/delete_video', { id: it.id }).catch(() => {});
       render();
     }
 
     // 영상
+    const RV_POS_OPTS = [['', '원고 자리대로'], ['top', '처음 (인용구 뒤)'], ['middle', '중간'], ['end', '끝 (태그 앞)']];
     function renderReviewVideos() {
       const box = document.getElementById('rv-videos');
       box.innerHTML = rvVideos.map((v, i) => `<div class="rv-item" ${rvDragAttrs('영상', i)}>`
         + `<b class="rv-num">${i + 1}</b><span class="rv-ph">🎬</span>`
         + `<span class="rv-name">${esc(v.name)}<br><small>${v.state === 'up' ? `올리는 중 ${v.pct}%` : v.state === 'err' ? '<span style="color:#dc2626;">' + esc(v.msg) + '</span>' : '올림'}</small>`
-        + `<input type="text" maxlength="40" placeholder="영상 제목 (40자)" value="${esc(v.title)}" oninput="rvVideos[${i}].title=this.value"></span>`
-        + `<button type="button" title="본문 커서 자리에 넣기" onclick="rvInsertLine('[영상:${i + 1}]')">넣기</button>`
+        + `<input type="text" maxlength="40" placeholder="영상 제목 (40자)" value="${esc(v.title)}" oninput="rvVideos[${i}].title=this.value">`
+        + `<select title="글 안 자리" style="margin-top:3px;padding:2px 6px;font-size:11.5px;width:auto;" onchange="rvVideos[${i}].pos=this.value; renderReviewVideos();">`
+        + RV_POS_OPTS.map(([k, t]) => `<option value="${k}" ${(v.pos || '') === k ? 'selected' : ''}>${t}</option>`).join('') + `</select></span>`
+        + (v.pos ? '' : `<button type="button" title="본문 커서 자리에 넣기" onclick="rvInsertLine('[영상:${i + 1}]')">넣기</button>`)
         + `<button type="button" title="앞으로" onclick="rvMove(rvVideos, ${i}, -1, renderReviewVideos, '영상')" ${i ? '' : 'disabled'}>▲</button>`
         + `<button type="button" title="뒤로" onclick="rvMove(rvVideos, ${i}, 1, renderReviewVideos, '영상')" ${i < rvVideos.length - 1 ? '' : 'disabled'}>▼</button>`
         + `<button type="button" title="빼기" onclick="rvRemove(rvVideos, ${i}, renderReviewVideos, '영상')">✕</button></div>`).join('');
+      if (typeof clipPosSync === 'function') clipPosSync();
     }
     function uploadVideoFile(v, f) {
       return new Promise((resolve, reject) => {
@@ -4290,7 +4300,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       return {
         photo_ids: rvPhotos.filter(p => p.state === 'ok').map(p => p.id),
         rep_photo_id: (rvPhotos.find(p => p.rep && p.state === 'ok') || {}).id || '',
-        videos: rvVideos.filter(v => v.state === 'ok').map(v => ({ id: v.id, title: v.title })),
+        videos: rvVideos.filter(v => v.state === 'ok').map(v => ({ id: v.id, title: v.title, pos: v.pos || '' })),
         clips: rvClips.map(c => ({ id: c.id, title: c.title })),
       };
     }
@@ -4459,7 +4469,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         if (d.state === 'running') { st.innerText = `⏳ ${d.msg || '만드는 중...'} (${d.pct || 0}%)`; return setTimeout(tick, 1500); }
         btn.disabled = false;
         if (d.state === 'done' && d.result) {
+          const prevId = clipLast && clipLast.id;
           clipLast = d.result;
+          clipPlace(prevId);
           st.innerHTML = `✅ 클립 완성 — ${d.result.seconds}초 · 장면 ${d.result.scenes}개`;
           const v = document.getElementById('clip-video');
           v.src = '/api/review/clip_file?id=' + encodeURIComponent(d.result.id) + '&_=' + Date.now() + '#t=0.1';
@@ -4473,15 +4485,50 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       };
       setTimeout(tick, 1200);
     }
-    function clipAddToPost() {
-      if (!clipLast) return;
-      if (rvVideos.some(v => v.id === clipLast.id)) { alert('이미 영상 목록에 넣었습니다.'); return; }
-      if (rvVideos.length >= RV_MAX_VIDEOS) { alert(`영상은 최대 ${RV_MAX_VIDEOS}개까지입니다.`); return; }
-      rvVideos.push({ key: ++rvSeq, name: clipLast.name, id: clipLast.id, title: (clipLast.title || '숏폼 클립').slice(0, 40), state: 'ok', pct: 100, msg: '' });
+    // 만든 클립을 글 안에 넣기: [블로그에 넣기] 자리(처음·중간·끝)로 영상 목록에 넣고, 발행 때 그 자리에 들어간다
+    const CLIP_POS_KO = { top: '처음 (대가성 문구·인용구 바로 뒤)', middle: '중간', end: '끝 (태그 바로 앞)' };
+    function clipPlace(prevId) {
+      const sel = document.getElementById('clip_blog_pos').value;
+      const pos = sel === 'manual' ? '' : sel;
+      try { localStorage.setItem('clip_blog_pos', sel); } catch (e) {}
+      if (!clipLast) return clipPosSync();
+      const ids = [clipLast.id, prevId].filter(Boolean);
+      const at = rvVideos.findIndex(v => v.fromClip && ids.includes(v.id));
+      if (!sel) {                          // 넣지 않음: 목록에서만 뺀다 (클립 파일은 그대로 → 올리기·저장 가능)
+        if (at >= 0) {
+          rvVideos.splice(at, 1);
+          const map = { [at + 1]: 0 };
+          for (let k = at + 2; k <= rvVideos.length + 1; k++) map[k] = k - 1;
+          rvRenumber('영상', map);
+          renderReviewVideos();
+        }
+        return clipPosSync();
+      }
+      const title = (clipLast.title || '숏폼 클립').slice(0, 40);
+      if (at >= 0) {                       // 다시 만든 클립은 같은 번호 자리를 그대로 바꾼다
+        Object.assign(rvVideos[at], { id: clipLast.id, name: clipLast.name, title, pos });
+      } else {
+        if (rvVideos.length >= RV_MAX_VIDEOS) { alert(`영상은 최대 ${RV_MAX_VIDEOS}개까지라 클립을 넣지 못했습니다. 영상 하나를 빼고 다시 골라 주세요.`); return clipPosSync(); }
+        rvVideos.push({ key: ++rvSeq, name: clipLast.name, id: clipLast.id, title, state: 'ok', pct: 100, msg: '', pos, fromClip: true });
+      }
       renderReviewVideos();
       renderClipScenes();
-      alert(`영상 ${rvVideos.length}번으로 넣었습니다. 본문에 [영상:${rvVideos.length}] 자리를 넣으면 그 자리에 들어갑니다.`);
+      clipPosSync();
     }
+    function clipPosChanged() { clipPlace(); }
+    function clipPosSync() {               // 영상 목록에서 자리를 바꾼 경우에도 위 선택칸·안내를 맞춘다
+      const note = document.getElementById('clip-pos-note');
+      const it = clipLast && rvVideos.find(v => v.fromClip && v.id === clipLast.id);
+      if (!clipLast) { note.innerText = ''; return; }
+      document.getElementById('clip_blog_pos').value = it ? (it.pos || 'manual') : '';
+      const n = it ? rvVideos.indexOf(it) + 1 : 0;
+      note.innerText = !it ? '이 클립은 글에 넣지 않습니다. [블로그에 넣기]에서 자리를 고르면 글에 들어갑니다.'
+        : it.pos ? `✔ 영상 ${n}번으로 글 ${CLIP_POS_KO[it.pos]}에 들어갑니다. (본문의 [영상:${n}] 줄과 상관없이 이 자리)`
+        : `✔ 영상 ${n}번 — 본문의 [영상:${n}] 자리에 들어갑니다.`;
+    }
+    (function () {                         // 지난번에 고른 자리 기억
+      try { const v = localStorage.getItem('clip_blog_pos'); if (v !== null) document.getElementById('clip_blog_pos').value = v; } catch (e) {}
+    })();
 
     const CLIP_CATS = ['플레이스', '여행', '푸드', '일상기록', '엔터', '음악', '뷰티', '패션', '프로스포츠', '아웃도어, 운동',
       '미술', '경제', '과학', '리빙, 홈', '동물', '라이프스타일', '테크', '문학', '인문, 교양', '이슈', '건강, 의학', '게임',
@@ -6002,7 +6049,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=4) as ex:      # 사진 설명 (한 번 만든 설명은 저장돼 다시 쓰임)
                 descs = list(ex.map(lambda ph: user_media.describe_photo(ph[0], key), photos))
-            n_videos = len(review_video_map(payload.get("videos")))
+            _, free_videos, fixed_videos = review_post.video_slots(review_video_map(payload.get("videos")))
+            n_videos = len(free_videos)       # 자리 고정 영상(처음·중간·끝)은 AI에게 맡기지 않고 아래에서 넣는다
             clips = review_clip_map(payload.get("clips"))
             try:
                 title, lines, tags, checklist = review_post.generate_from_guide(
@@ -6012,6 +6060,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 logger.warning(f"체험단 가이드 원고 생성 실패: {e}")
                 return self._send_json({"ok": False, "message": str(e)}, 400)
+            if fixed_videos:                  # 화면의 영상 번호로 되돌리고, 자리 고정 영상은 정한 자리에
+                lines = review_post.renumber_media(lines, "영상", {j: n for j, n in enumerate(free_videos, 1)})
+                lines = review_post.place_fixed(lines, [(f"[영상:{n}]", pos) for n, pos in fixed_videos])
             chars = review_post.body_chars(lines)
             logger.info(f"📝 체험단 가이드 원고: '{title}' 본문 {chars:,}자, 해시태그 {len(tags)}개")
             rep_no = review_post.rep_photo_no(guide)
@@ -6048,9 +6099,12 @@ class RequestHandler(BaseHTTPRequestHandler):
             if len(title) > 300 or len(content) > 60000 or len(tags) > 3000:
                 return self._send_json({"ok": False, "message": "제목/본문/태그 길이가 너무 깁니다."}, 400)
             photos = review_photo_list(payload.get("photo_ids"))
-            videos = review_video_map(payload.get("videos"))
+            videos, free_videos, fixed_videos = review_post.video_slots(review_video_map(payload.get("videos")))
             clips = review_clip_map(payload.get("clips"))
-            counts = {"사진": len(photos), "영상": len(videos), "클립": len(clips)}
+            counts = {"사진": len(photos), "영상": len(free_videos), "클립": len(clips)}
+            if fixed_videos:                  # 자리 고정 영상(숏폼 클립 등)은 원고의 [영상:N] 줄을 빼고 아래에서 정한 자리에
+                content = "\n".join(review_post.renumber_media(
+                    content.replace("\r\n", "\n").split("\n"), "영상", {n: j for j, n in enumerate(free_videos, 1)}))
             if payload.get("manuscript"):      # 받은 원고: 'N번 이미지' 자리와 사진 번호가 어긋나면 안 됨
                 nums = [m[1] for m in map(review_post.media_marker, content.split("\n")) if m and m[0] == "사진"]
                 if nums and max(nums) > len(photos):
@@ -6061,6 +6115,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                 if _auto:
                     lines = lines + ["", _auto]
                     logger.info(f"📍 원고에서 장소를 찾아 지도를 넣습니다: {review_post.map_marker(_auto)}")
+            if fixed_videos:
+                _pos_ko = {"top": "처음", "middle": "중간", "end": "끝"}
+                lines = review_post.place_fixed(lines, [(f"[영상:{len(free_videos) + j}]", pos)
+                                                        for j, (_, pos) in enumerate(fixed_videos, 1)])
+                logger.info("🎬 자리 고정 영상: " + ", ".join(_pos_ko[p] for _, p in fixed_videos))
             _cfg = load_config()
             if any(review_post.map_marker(l) == "" for l in lines) and not (_cfg.get("map_query") or "").strip():
                 return self._send_json({"ok": False, "message": "지도에 넣을 가게 이름이 없습니다. 본문의 [지도] 줄을 [지도:가게 이름]으로 고쳐 주세요."}, 400)

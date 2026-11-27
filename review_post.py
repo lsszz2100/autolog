@@ -394,6 +394,88 @@ def spread_markers(lines: List[str], markers: List[str]) -> List[str]:
     return out
 
 
+# ── 자리를 정해 둔 영상 (숏폼 클립: 처음·중간·끝) ──
+
+VIDEO_POS = ("top", "middle", "end")      # 처음(대가성 문구·인용구 바로 뒤) / 중간 / 끝(태그 앞)
+
+
+def video_slots(videos: Dict[int, Dict]) -> Tuple[Dict[int, Dict], List[int], List[Tuple[int, str]]]:
+    """영상 번호표를 '원고 자리대로' 영상 먼저, '자리 고정' 영상 뒤로 다시 매긴다.
+    → (새 번호표, 원고 자리대로 영상의 원래 번호들, [(자리 고정 영상의 원래 번호, 자리)])"""
+    free = [n for n in sorted(videos) if videos[n].get("pos") not in VIDEO_POS]
+    fixed = [(n, videos[n]["pos"]) for n in sorted(videos) if videos[n].get("pos") in VIDEO_POS]
+    order = free + [n for n, _ in fixed]
+    return {i: videos[n] for i, n in enumerate(order, 1)}, free, fixed
+
+
+def renumber_media(lines: List[str], kind: str, mapping: Dict[int, int]) -> List[str]:
+    """[kind:N] 줄의 번호를 mapping 대로 바꾸고, mapping 에 없는 번호의 줄은 뺀다."""
+    out: List[str] = []
+    for l in lines:
+        mm = media_marker(l)
+        if mm and mm[0] == kind:
+            if mm[1] in mapping:
+                out.append(f"[{kind}:{mapping[mm[1]]}]")
+            continue
+        out.append(l)
+    return out
+
+
+def _body_end(lines: List[str]) -> int:
+    """끝의 빈 줄·해시태그 줄을 뺀 본문 끝 위치."""
+    end = len(lines)
+    while end > 0 and (not lines[end - 1].strip()
+                       or _TAG_LINE.fullmatch(lines[end - 1].strip()) and not is_heading(lines[end - 1])):
+        end -= 1
+    return end
+
+
+def _slot_index(lines: List[str], pos: str) -> int:
+    end = _body_end(lines)
+    if pos == "top":                     # 맨 위 대가성 문구·인용구 다음 (소제목·본문 앞)
+        i = 0
+        while i < end and (not lines[i].strip() or is_disclosure(lines[i]) or is_quote(lines[i])):
+            i += 1
+        while i > 0 and not lines[i - 1].strip():
+            i -= 1                       # 빈 줄 앞에 붙여 대가성 문구 뒤 간격은 그대로
+        return i
+    if pos == "middle":                  # 글자 수로 가운데쯤, 글 덩어리(문단+그 사진) 사이 — 문단과 그 사진 사이는 피함
+        def head(l):
+            return is_heading(l) or emoji_heading(l)
+        def prose(l):
+            return bool(l.strip()) and not is_special(l) and not head(l) and not is_quote(l) and not is_disclosure(l)
+        total = sum(len(plain_text(l).replace(" ", "")) for l in lines[:end] if prose(l))
+        best, best_d, acc, prev = None, None, 0, None   # prev: 바로 앞 글 줄(빈 줄 아님)의 위치
+        for i in range(end):
+            l = lines[i]
+            if not l.strip():
+                continue
+            if (prose(l) or head(l)) and prev is not None and (prose(lines[prev]) or media_marker(lines[prev])):
+                if not (prose(l) and prose(lines[prev]) and prev == i - 1):     # 한 문단 안 줄바꿈은 제외
+                    d = abs(acc - total / 2)
+                    if best_d is None or d < best_d:
+                        best, best_d = prev + 1, d
+            if prose(l):
+                acc += len(plain_text(l).replace(" ", ""))
+            prev = i
+        return end if best is None else best
+    return end
+
+
+def place_fixed(lines: List[str], markers: List[Tuple[str, str]]) -> List[str]:
+    """[(표시 줄, 자리)] 를 처음·중간·끝 자리에 넣는다 (같은 자리는 고른 순서대로 이어서). 앞뒤 빈 줄 하나."""
+    lines = list(lines)
+    for pos in ("middle", "end", "top"):
+        group = [m for m, p in markers if p == pos]
+        if not group:
+            continue
+        i = _slot_index(lines, pos)
+        before = [""] if i > 0 and lines[i - 1].strip() else []
+        after = [""] if i < len(lines) and lines[i].strip() else []
+        lines[i:i] = before + group + after
+    return lines
+
+
 # ── 해시태그 ──
 
 _TAG_LINE = re.compile(r"(#[^\s#]+\s*)+")
