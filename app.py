@@ -2058,6 +2058,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
               <option value="male_friendly">남성 · 친근하게</option><option value="male_calm">남성 · 차분한 정보형</option><option value="male_upbeat">남성 · 경쾌하게</option>
               <option value="none">나레이션 없음 (자막만)</option></select></label>
             <label><input type="checkbox" id="clip_sponsor" style="width:auto;margin:0 4px 0 0;">협찬 표시 <input type="text" id="clip_sponsor_text" value="제품 제공 · 협찬" maxlength="20" style="width:130px;padding:4px 8px;font-size:12px;"></label>
+            <label title="쇼츠식: 사진 확대·이동, 빠른 전환, 첫 장면 후킹 문구, 자막 튀어나오기, 효과음, 진행 막대">연출 <select id="clip_style">
+              <option value="shorts" selected>쇼츠식 (움직임·빠른 전환)</option><option value="calm">차분하게 (사진 고정)</option></select></label>
+            <label title="상업 이용 가능한 공공 저작물(CC0) 음악. 나레이션이 나올 땐 자동으로 작아집니다">배경음악 <select id="clip_bgm">
+              <option value="auto" selected>자동 (말투에 맞춰)</option><option value="bright">밝게</option><option value="chill">잔잔하게</option>
+              <option value="energetic">신나게</option><option value="emotional">감성</option><option value="none">없음</option></select></label>
             <label title="만든 클립을 이 글 안에 넣을 자리. 만든 뒤에도 바꿀 수 있습니다">블로그에 넣기 <select id="clip_blog_pos" onchange="clipPosChanged()">
               <option value="">넣지 않음</option><option value="top">처음 (대가성 문구·인용구 바로 뒤)</option>
               <option value="middle">중간</option><option value="end">끝 (태그 앞)</option><option value="manual">본문의 [영상:N] 자리</option></select></label>
@@ -2068,6 +2073,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           </div>
           <div id="clip-guide" class="clip-guide" style="display:none;"></div>
           <div id="clip-editor" style="display:none;margin-top:10px;">
+            <div class="form-group">
+              <label>후킹 문구 <span style="font-weight:400;color:#64748b;">(쇼츠식: 첫 2초 화면 가운데 크게, ==단어== 강조)</span></label>
+              <input type="text" id="clip_hook" maxlength="24" placeholder="예: 송도에 ==동굴== 바베큐집?">
+            </div>
             <div class="form-group">
               <label>상단 제목 <span style="font-weight:400;color:#64748b;">(2줄, ==단어== 는 노란색 강조)</span></label>
               <input type="text" id="clip_title1" maxlength="24" placeholder="제목 1줄">
@@ -4431,12 +4440,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       try {
         const d = await postJSON('/api/review/clip_script', {
           ...media, seconds: +document.getElementById('clip_seconds').value, tone: document.getElementById('clip_tone').value,
-          voice: document.getElementById('clip_voice').value,
+          voice: document.getElementById('clip_voice').value, style: document.getElementById('clip_style').value,
           sponsor: document.getElementById('clip_sponsor').checked ? document.getElementById('clip_sponsor_text').value.trim() : '',
           guide: document.getElementById('rv_guide').value, notes: document.getElementById('rv_notes').value,
           brand: document.getElementById('rv_brand').value, title: document.getElementById('rv_title').value,
           content: document.getElementById('rv_content').value });
         const sc = d.script || {};
+        document.getElementById('clip_hook').value = sc.hook || '';
         document.getElementById('clip_title1').value = (sc.title_lines || [])[0] || '';
         document.getElementById('clip_title2').value = (sc.title_lines || [])[1] || '';
         clipScenes = (sc.scenes || []).map(x => ({ media: x.media, caption: x.caption || '', narration: x.narration || '' }));
@@ -4466,9 +4476,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       try {
         await postJSON('/api/review/clip_make', {
           ...media, voice, tone: document.getElementById('clip_tone').value,
+          style: document.getElementById('clip_style').value, bgm: document.getElementById('clip_bgm').value,
           sponsor: document.getElementById('clip_sponsor').checked ? document.getElementById('clip_sponsor_text').value.trim() : '',
           rules: clipRules,
-          script: { title_lines: [document.getElementById('clip_title1').value, document.getElementById('clip_title2').value].filter(x => x.trim()), scenes,
+          script: { hook: document.getElementById('clip_hook').value, title_lines: [document.getElementById('clip_title1').value, document.getElementById('clip_title2').value].filter(x => x.trim()), scenes,
                     description: document.getElementById('clip_desc').value } });
       } catch (e) { alert(e.message || e); btn.disabled = false; st.style.display = 'none'; return; }
       const tick = async () => {
@@ -6174,7 +6185,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 seconds = clip_maker.target_seconds(max(10, min(seconds, 90)), rules)
                 script = clip_maker.make_script(api_key, items, seconds,
                                                 str(payload.get("tone") or "review"), texts["guide"], texts["notes"],
-                                                texts["brand"], texts["title"], texts["content"], rules=rules)
+                                                texts["brand"], texts["title"], texts["content"], rules=rules,
+                                                style=str(payload.get("style") or "shorts"))
             except Exception as e:
                 logger.warning(f"클립 대본 만들기 실패: {e}")
                 return self._send_json({"ok": False, "message": str(e)}, 400)
@@ -6204,6 +6216,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             voice = str(payload.get("voice") or "female_bright")
             tone = str(payload.get("tone") or "review")
             sponsor = str(payload.get("sponsor") or "")[:20]
+            style = str(payload.get("style") or "shorts")
+            bgm = str(payload.get("bgm") or "auto")
+            if bgm not in clip_maker.BGMS and bgm not in ("auto", "none"):
+                bgm = "auto"
             rules = clip_maker.normalize_rules(payload.get("rules")) if isinstance(payload.get("rules"), dict) else None
             if rules and not rules.get("found"):
                 rules = None
@@ -6214,7 +6230,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
             def job(progress):
                 res = clip_maker.build_clip(key, script, items, voice=voice, tone=tone, sponsor=sponsor, progress=progress,
-                                            min_seconds=(rules or {}).get("min_seconds"))
+                                            min_seconds=(rules or {}).get("min_seconds"), style=style, bgm=bgm)
                 saved = ""
                 try:     # 클립 업로드용으로 '동영상\오토로그 클립' 폴더에도 복사
                     folder = Path.home() / "Videos" / "오토로그 클립"

@@ -72,6 +72,22 @@ TONES = {
              "energetic, upbeat and fast-paced, like a popular Korean short-form creator"),
 }
 
+# 배경음악: FreePD.com 공공 저작물(CC0 — 상업 이용·재배포 가능, 출처 표시 불필요). 사이트가 닫혀 archive.org 사본에서 받는다.
+# (이름, 파일, sha256, 앞 무음 건너뛰기 초, 원곡 평균 음량 dB)
+BGM_BASE = "https://archive.org/download/abook-music-freepd-cc0/"
+BGMS = {
+    "bright": ("밝게 (Inspiration)", "fpd-878d4dee797d92ef.mp3",
+               "a254227da398809c79a0c753073a3a92c7341672abc92bb0166b6326e126f0b4", 0.85, -13.0),
+    "chill": ("잔잔하게 (Be Chillin)", "fpd-6c9a5c343a351b0f.mp3",
+              "1abaa9455ced505f10306b34d1fe569a43be28809ae39e62f422c69f312a74cb", 1.7, -17.5),
+    "energetic": ("신나게 (Energizing)", "fpd-c37643abec093971.mp3",
+                  "6b6f002c9721debbdb4a870fd7a084ec920761a064ca0333ad603e6348a538a4", 0.0, -28.1),
+    "emotional": ("감성 (Pina Colada)", "fpd-b71090110a54aaff.mp3",
+                  "6f69cfae518c18b54ffe4995ea9b856c1db58811fc1f9429162d9a5f153aeafa", 0.75, -26.4),
+}
+BGM_AUTO = {"review": "bright", "info": "chill", "hype": "energetic"}     # '자동' = 말투에 맞춰
+STYLES = ("shorts", "calm")     # shorts: 움직임·빠른 전환·후킹 문구·효과음·진행 막대 / calm: 사진 고정 + 디졸브
+
 YELLOW = (255, 225, 77)
 WHITE = (255, 255, 255)
 _HL_RE = re.compile(r"==(.+?)==")
@@ -200,7 +216,7 @@ def media_items(photos: List[Tuple[str, str]], videos: Dict[int, Dict]) -> List[
     """[{key:'사진1', kind, n, path}] — 사진 먼저, 영상 다음 (올린 순서)."""
     items = [{"key": f"사진{i}", "kind": "사진", "n": i, "path": p} for i, (_, p) in enumerate(photos, 1)]
     items += [{"key": f"영상{n}", "kind": "영상", "n": n, "path": v["path"], "title": v.get("title", "")}
-              for n, v in sorted(videos.items())]
+              for n, v in sorted(videos.items()) if v.get("path")]
     return items
 
 
@@ -260,7 +276,8 @@ def _rules_block(rules: Optional[Dict]) -> str:
 
 
 def _script_prompt(items: List[Dict], seconds: int, tone: str, guide: str, notes: str, brand: str,
-                   post_title: str, post_body: str, n_scenes: int, rules: Optional[Dict] = None, fix: str = "") -> str:
+                   post_title: str, post_body: str, n_scenes: int, rules: Optional[Dict] = None, fix: str = "",
+                   style: str = "shorts") -> str:
     tone_ko = TONES.get(tone, TONES["review"])[1]
     labels = "\n".join(f"- {it['key']}: {'사진' if it['kind'] == '사진' else '영상'}"
                        + (f" (영상 길이 {it.get('duration', 0):.0f}초, 제목 '{it.get('title', '')}')" if it["kind"] == "영상" else "")
@@ -282,7 +299,8 @@ def _script_prompt(items: List[Dict], seconds: int, tone: str, guide: str, notes
 {(post_body or '(없음)')[:3000]}
 {_rules_block(rules)}{fix}
 [구성]
-- 전체 길이 약 {seconds}초. 장면 {n_scenes}개 안팎(최대 {MAX_SCENES}개), 한 장면은 약 4초. 장면 하나 = 소재 하나.
+- 전체 길이 약 {seconds}초. 장면 {n_scenes}개 안팎(최대 {MAX_SCENES}개), 한 장면은 약 {3 if style == "shorts" else 4}초. 장면 하나 = 소재 하나.
+{_SHORTS_RULES if style == "shorts" else ""}
 - 소재는 모두 한 번씩 쓰세요. 소재가 장면 수보다 적으면 같은 소재를 다른 장면에 한 번 더 써도 됩니다(연달아 같은 소재는 금지). 순서는 이야기 흐름에 맞게.
 - 첫 장면 나레이션은 꼭 존댓말 인사로 시작: "안녕하세요! 오늘 소개해 드릴 제품은 ○○예요."처럼 (제품이 아니면 "오늘 소개해 드릴 곳은" 등 소재에 맞게). 그 장면 자막은 제품·장소 이름이 들어간 짧은 소개.
 - 마지막 장면 나레이션은 꼭 "자세한 내용은 블로그와 클립 설명에 있는 링크를 꼭 참고해 주세요."와 같은 뜻으로 마무리 (말은 자연스럽게 바꿔도 됨). 그 장면 자막도 "자세한 건 ==링크==에서"처럼 링크 안내.
@@ -296,17 +314,28 @@ def _script_prompt(items: List[Dict], seconds: int, tone: str, guide: str, notes
 
 [사실 규칙]
 - 사진·영상에 보이는 것, 메모·가이드·원고에 있는 사실만 쓰세요. 맛·가격·위치·경험을 지어내지 마세요.
+- "내돈내산"·"광고 아님" 같은 대가 관련 표현·해시태그는 메모·가이드에 그렇게 적혀 있을 때만 (체험단·협찬 글이 많음).
 - "최고", "1위", "무조건", "100%" 같은 과장·단정 표현 금지. 가이드의 필수 키워드는 자연스럽게 1번 이상 넣으세요.
 
 아래 JSON 하나만 출력하세요 (설명 문장 금지):
-{{"title_lines": ["제목 1줄", "제목 2줄"],
+{{"hook": "후킹 문구",
+  "title_lines": ["제목 1줄", "제목 2줄"],
   "scenes": [{{"media": "사진1", "caption": "자막 ==강조== 문장", "narration": "나레이션 문장"}}],
   "description": "클립 설명란 글"}}"""
 
 
+_SHORTS_RULES = """[쇼츠 연출 — 조회수 잘 나오는 한국 숏폼처럼. 아래 말투 규칙과 다르면 이 규칙이 우선]
+- 첫 1.5초가 승부: hook(후킹 문구)은 화면 가운데 크게 뜨는 8~14자 한 줄. 궁금증·숫자·반전·구체적 장면으로 멈추게 (예: "송도에 ==동굴== 바베큐집?", "이 가격에 ==이 양==?"). 과장·최고·1위 금지, 사실만.
+- 첫 장면 나레이션은 존댓말 인사 뒤에 바로 후킹 한마디 (예: "안녕하세요! 송도에 동굴 콘셉트 바베큐집이 있다는 거 아세요?"). 소개는 질질 끌지 말 것.
+- 가장 눈길 끄는 소재(대표 메뉴·완성 장면·분위기 좋은 컷)를 첫 장면에. 그다음 장면마다 정보 하나씩: 메뉴 이름·가격·양·맛 포인트·분위기·위치·꿀팁. 같은 말 반복 금지.
+- 장면은 짧고 빠르게: 나레이션은 장면당 한 문장, 공백 포함 12~22자. 자막은 그 문장의 핵심 6~12자.
+- 끝 직전 장면은 한 줄 요약·추천 대상 (예: "데이트 코스로 딱이에요"), 마지막은 링크 안내.
+"""
+
+
 def make_script(api_key: str, items: List[Dict], seconds: int = 30, tone: str = "review", guide: str = "",
                 notes: str = "", brand: str = "", post_title: str = "", post_body: str = "",
-                rules: Optional[Dict] = None) -> Dict:
+                rules: Optional[Dict] = None, style: str = "shorts") -> Dict:
     import gemini_client
     from ai import WRITER_MODELS
     if not (api_key or "").strip():
@@ -331,7 +360,7 @@ def make_script(api_key: str, items: List[Dict], seconds: int = 30, tone: str = 
             images.append(("image/jpeg", b64))
     seconds = max(10, min(int(seconds or 30), 90))
     seconds = target_seconds(seconds, rules)
-    n_scenes = max(3, min(MAX_SCENES, round(seconds / 5)))
+    n_scenes = max(3, min(MAX_SCENES, round(seconds / (3.4 if style == "shorts" else 5))))
     valid = {it["key"] for it in items}
 
     def accept(text: str):
@@ -344,7 +373,7 @@ def make_script(api_key: str, items: List[Dict], seconds: int = 30, tone: str = 
     for attempt in range(2):          # 가이드 키워드·문구가 빠지면 한 번 더 고쳐 쓰게 한다
         data, model = gemini_client.generate(
             api_key.strip(), _script_prompt(items, seconds, tone, guide, notes, brand, post_title, post_body, n_scenes,
-                                            rules, fix),
+                                            rules, fix, style),
             WRITER_MODELS, generation_config={"temperature": 0.8, "maxOutputTokens": 4000}, timeout=60,
             accept=accept, images=images[:16])
         logger.info(f"🎬 클립 대본 생성 ({model})")
@@ -562,7 +591,8 @@ def clean_script(data: Dict, items: List[Dict]) -> Dict:
         raise ClipError("대본에 쓸 수 있는 장면이 없습니다. 다시 만들어 주세요.")
     desc = str(data.get("description") or "").replace("\\n", "\n")
     desc = re.sub(r"[ \t]+", " ", re.sub(r"\*\*|==", "", desc)).strip()[:1500]
-    return {"title_lines": title, "scenes": scenes, "description": desc}
+    hook = _clean_text(data.get("hook"), 24)
+    return {"hook": hook, "title_lines": title, "scenes": scenes, "description": desc}
 
 
 # ─────────────────────────────── 나레이션 (Gemini TTS) ───────────────────────────────
@@ -710,8 +740,10 @@ def _draw_lines(draw, lines, font, cy: int, stroke: int, line_gap: float = 1.22)
             x += font.getlength(t)
 
 
-def overlay_png(title_lines: List[str], caption: str, sponsor: str, out: Path, fonts: Dict[str, str]):
-    """한 장면의 글자 층 (투명 PNG 1080x1920): 위·아래 어둡게, 상단 제목, 협찬 표시, 자막."""
+def overlay_png(title_lines: List[str], caption: str, sponsor: str, out: Path, fonts: Dict[str, str],
+                caption_out: Optional[Path] = None):
+    """한 장면의 글자 층 (투명 PNG 1080x1920): 위·아래 어둡게, 상단 제목, 협찬 표시, 자막.
+    caption_out 을 주면 자막은 따로 그 파일에 (쇼츠식: 자막이 튀어나오는 움직임)."""
     from PIL import Image, ImageDraw, ImageFont
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     shade = Image.new("L", (1, H), 0)
@@ -738,8 +770,26 @@ def overlay_png(title_lines: List[str], caption: str, sponsor: str, out: Path, f
         d.rounded_rectangle((44, 92, 44 + tw + 40, 92 + 58), radius=29, fill=(255, 255, 255, 215))
         d.text((64, 99), sponsor, font=sf, fill=(30, 30, 30))
     if caption:
-        cf = ImageFont.truetype(fonts["caption"], 74)
-        _draw_lines(d, _wrap(caption, cf, 960, 2), cf, 1570, 9)
+        cf = ImageFont.truetype(fonts["caption"], 78 if caption_out else 74)
+        if caption_out:
+            cap = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            _draw_lines(ImageDraw.Draw(cap), _wrap(caption, cf, 960, 2), cf, 1560, 10)
+            cap.save(caption_out)
+        else:
+            _draw_lines(d, _wrap(caption, cf, 960, 2), cf, 1570, 9)
+    img.save(out)
+
+
+def hook_png(hook: str, out: Path, fonts: Dict[str, str]):
+    """첫 장면 가운데에 크게 뜨는 후킹 문구 (반투명 검은 띠 + 큰 글자)."""
+    from PIL import Image, ImageDraw, ImageFont
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    hf = ImageFont.truetype(fonts["title"], 108)
+    lines = _wrap(hook, hf, 980, 2)
+    lh = int(108 * 1.2)
+    top = 900 - lh * len(lines) // 2
+    ImageDraw.Draw(img).rounded_rectangle((30, top - 40, W - 30, top + lh * len(lines) + 30), radius=36, fill=(0, 0, 0, 150))
+    _draw_lines(ImageDraw.Draw(img), lines, hf, 900, 10, 1.2)
     img.save(out)
 
 
@@ -803,6 +853,73 @@ def render_photo_scene(ff: str, item: Dict, ovl: Path, nar: Optional[Path], dur:
     base.unlink(missing_ok=True)
 
 
+MOTIONS = ("punch", "pan_l", "push", "rise", "pan_r", "pull")
+
+
+def _zoompan(kind: str, n: int) -> Tuple[str, str, str]:
+    """움직임 종류 → ffmpeg zoompan 식 (z, x, y). on = 프레임 번호.
+    punch: 탁 당겨 들어간 뒤 천천히 더 / push: 천천히 다가감 / pull: 물러남 / pan: 좌우 / rise: 위아래."""
+    p = f"(on/{max(n - 1, 1)})"
+    sm = f"({p}*{p}*(3-2*{p}))"
+
+    def eo(x: str) -> str:                       # 처음 빠르고 끝에 느려지는 곡선
+        return f"(1-pow(1-min({x}\\,1)\\,3))"
+    z, dx, dy = "1.16", "0", "0"
+    if kind == "punch":
+        z = f"1+0.16*{eo(f'on/{FPS}/0.32')}+0.06*{p}"
+    elif kind == "push":
+        z = f"1.02+0.16*{sm}"
+    elif kind == "pull":
+        z = f"1.2-0.17*{eo(f'{p}*1.2')}"
+    elif kind == "pan_l":
+        dx = f"(0.85-1.7*{sm})"
+    elif kind == "pan_r":
+        dx = f"(-0.85+1.7*{sm})"
+    elif kind == "rise":
+        dy = f"(0.7-1.4*{sm})"
+    return z, f"(iw-iw/zoom)/2*(1+{dx})", f"(ih-ih/zoom)/2*(1+{dy})"
+
+
+ZP_MULT = 2              # 사진을 2배로 키운 뒤 잘라 움직여 떨림을 없앤다 (3배는 2배 넘게 느림)
+
+
+def render_photo_scene_motion(ff: str, item: Dict, ovl: Path, cap: Optional[Path], hook: Optional[Path],
+                              nar: Optional[Path], dur: float, out: Path, lead: float, motion: str):
+    """쇼츠식 사진 장면: 확대·이동 + 자막이 아래에서 올라오며 나타남 + (첫 장면) 가운데 후킹 문구."""
+    from PIL import Image
+    S = 1.25
+    base = out.with_suffix(".jpg")
+    _photo_base(item["path"], base, scale=S)
+    with Image.open(base) as im:
+        bw, bh = im.size
+    n = max(1, int(round(dur * FPS)))
+    z, x, y = _zoompan(motion, n)
+    inputs = ["-i", str(base), "-loop", "1", "-t", f"{dur:.3f}", "-i", str(ovl)]
+    fc = [f"[0:v]scale={bw * ZP_MULT}:{bh * ZP_MULT}:flags=bicubic,"
+          f"zoompan=z='{z}':x='{x}':y='{y}':d={n}:s={W}x{H}:fps={FPS},setsar=1[bg]",
+          "[bg][1:v]overlay=0:0[m0]"]
+    last, idx = "[m0]", 2
+    if cap:
+        inputs += ["-loop", "1", "-t", f"{dur:.3f}", "-i", str(cap)]
+        st = lead + 0.05
+        fc.append(f"[{idx}:v]format=rgba,fade=t=in:st={st:.2f}:d=0.2:alpha=1[cap]")
+        fc.append(f"{last}[cap]overlay=x=0:y='46*pow(1-clip((t-{st:.2f})/0.28\\,0\\,1)\\,3)'[m1]")
+        last, idx = "[m1]", idx + 1
+    if hook:
+        inputs += ["-loop", "1", "-t", f"{dur:.3f}", "-i", str(hook)]
+        fc.append(f"[{idx}:v]format=rgba,fade=t=in:st=0:d=0.18:alpha=1,fade=t=out:st=1.85:d=0.35:alpha=1[hk]")
+        fc.append(f"{last}[hk]overlay=x=0:y='-70*pow(1-clip(t/0.3\\,0\\,1)\\,3)'[m2]")
+        last, idx = "[m2]", idx + 1
+    a_in, a_filter = _scene_audio_args(nar, dur, idx, lead)
+    fc.append(f"{last}scale=in_range=pc:out_range=tv,format=yuv420p[v]")
+    fc.append(a_filter)
+    try:
+        _run([ff, "-hide_banner", "-loglevel", "error", "-y", *inputs, *a_in, "-filter_complex", ";".join(fc),
+              "-map", "[v]", "-map", "[a]", "-t", f"{dur:.3f}", *_ENC, str(out)])
+    finally:
+        base.unlink(missing_ok=True)
+
+
 def render_video_scene(ff: str, item: Dict, ovl: Path, nar: Optional[Path], dur: float, out: Path, lead: float = 0.0):
     info = item.get("info") or probe(ff, item["path"])
     portrait = info["w"] and info["h"] / max(info["w"], 1) >= 1.5
@@ -836,12 +953,12 @@ def render_video_scene(ff: str, item: Dict, ovl: Path, nar: Optional[Path], dur:
     _run(inputs + ["-filter_complex", f"{v};{a}", "-map", "[v]", "-map", "[a]", "-t", f"{dur:.3f}", *_ENC, str(out)])
 
 
-def _scene_seconds(item: Dict, caption: str, nar_sec: float) -> float:
+def _scene_seconds(item: Dict, caption: str, nar_sec: float, style: str = "calm") -> float:
     if nar_sec:
-        d = nar_sec + 0.25
+        d = nar_sec + (0.15 if style == "shorts" else 0.25)
     else:
-        d = 1.4 + 0.16 * len(re.sub(r"\s|==", "", caption))
-    d = max(2.2, min(d, 9.0))
+        d = (1.1 if style == "shorts" else 1.4) + 0.16 * len(re.sub(r"\s|==", "", caption))
+    d = max(1.8 if style == "shorts" else 2.2, min(d, 9.0))
     if item["kind"] == "영상" and not nar_sec:
         vd = (item.get("info") or {}).get("duration") or 0
         if vd:
@@ -853,30 +970,96 @@ XFADE = 0.3              # 장면 사이 부드러운 전환(디졸브) 길이(�
 TEMPO = 1.1              # 나레이션 말 빠르기 (숏폼 기본 속도에 맞춰 조금 빠르게)
 
 
-def _join_crossfade(ff: str, parts: List[Path], durs: List[float], out: Path) -> float:
-    """장면 조각을 디졸브 전환으로 이어 붙인다. 반환: 전체 길이(초)."""
+XFADE_SHORTS = 0.25
+# 쇼츠식 전환 (장면마다 돌아가며). 화면이 번쩍이거나 어지러운 것은 뺐다
+TRANSITIONS = ("slideleft", "zoomin", "slideup", "smoothleft", "circleopen", "slideright", "smoothup", "wipeleft")
+
+
+def _join_crossfade(ff: str, parts: List[Path], durs: List[float], out: Path,
+                    style: str = "calm") -> Tuple[float, List[float]]:
+    """장면 조각을 전환 효과로 이어 붙인다. 반환: (전체 길이(초), 전환 시작 시각들)."""
+    xf = XFADE_SHORTS if style == "shorts" else XFADE
     if len(parts) == 1:
         shutil.copy(parts[0], out)
-        return round(durs[0], 1)
+        return round(durs[0], 1), []
     args = [ff, "-hide_banner", "-loglevel", "error", "-y"]
     for p in parts:
         args += ["-i", str(p)]
-    fc, v, a, length = [], "[0:v]", "[0:a]", durs[0]
+    fc, v, a, length, offs = [], "[0:v]", "[0:a]", durs[0], []
     for k in range(1, len(parts)):
-        off = length - XFADE
+        off = length - xf
+        offs.append(off)
+        tr = TRANSITIONS[(k - 1) % len(TRANSITIONS)] if style == "shorts" else "fade"
         nv, na = f"[v{k}]", f"[a{k}]"
-        fc.append(f"{v}[{k}:v]xfade=transition=fade:duration={XFADE}:offset={off:.3f}{nv}")
-        fc.append(f"{a}[{k}:a]acrossfade=d={XFADE}:c1=tri:c2=tri{na}")
-        v, a, length = nv, na, length + durs[k] - XFADE
+        fc.append(f"{v}[{k}:v]xfade=transition={tr}:duration={xf}:offset={off:.3f}{nv}")
+        fc.append(f"{a}[{k}:a]acrossfade=d={xf}:c1=tri:c2=tri{na}")
+        v, a, length = nv, na, length + durs[k] - xf
     _run(args + ["-filter_complex", ";".join(fc), "-map", v, "-map", a, *_ENC, "-movflags", "+faststart", str(out)],
          timeout=1200)
-    return round(length, 1)
+    return round(length, 1), offs
+
+
+def bgm_path(key: str, progress: Optional[Callable[[str], None]] = None) -> Optional[Path]:
+    """배경음악 파일 (처음 한 번 내려받아 확인 후 저장). 못 받으면 None — 배경음악 없이 만든다."""
+    if key not in BGMS:
+        return None
+    label, name, sha, _, _ = BGMS[key]
+    dest = TOOLS_DIR / "bgm" / name
+    if dest.exists() and dest.stat().st_size > 100000:
+        return dest
+    try:
+        if progress:
+            progress(f"배경음악 '{label}'을 처음 한 번 내려받습니다...")
+        _download(BGM_BASE + name, sha, dest, progress, "배경음악")
+        return dest
+    except Exception as e:
+        logger.warning(f"배경음악을 받지 못해 배경음악 없이 만듭니다: {e}")
+        return None
+
+
+def _finish(ff: str, src: Path, out: Path, total: float, bgm: Optional[Tuple[Path, float, float]],
+            whooshes: List[float], bar: bool):
+    """마무리: 배경음악(나레이션 나올 땐 자동으로 작게) + 전환 효과음 + 위쪽 진행 막대."""
+    args = [ff, "-hide_banner", "-loglevel", "error", "-y", "-i", str(src)]
+    fc: List[str] = []
+    mix = ["[0:a]"]
+    if bgm:
+        path, start, gain = bgm
+        args += ["-stream_loop", "-1", "-ss", f"{start:.2f}", "-i", str(path)]
+        fade = max(total - 1.5, 0)
+        fc.append(f"[0:a]asplit=2[nar][sc]")
+        fc.append(f"[1:a]aformat=sample_rates=44100:channel_layouts=stereo,atrim=0:{total:.3f},asetpts=PTS-STARTPTS,"
+                  f"volume={gain:.1f}dB,afade=t=in:d=0.6,afade=t=out:st={fade:.3f}:d=1.5[bg0]")
+        fc.append("[bg0][sc]sidechaincompress=threshold=0.025:ratio=5:attack=20:release=400[bg]")
+        mix = ["[nar]", "[bg]"]
+    if whooshes:
+        n = len(whooshes)
+        fc.append(f"anoisesrc=d=0.4:c=pink:r=44100:a=0.6,highpass=f=500,lowpass=f=7000,"
+                  f"afade=t=in:d=0.15:curve=exp,afade=t=out:st=0.15:d=0.25,volume=0.32,"
+                  f"aformat=sample_rates=44100:channel_layouts=stereo,asplit={n}" + "".join(f"[w{i}]" for i in range(n)))
+        for i, t in enumerate(whooshes):
+            ms = max(0, int((t - 0.1) * 1000))
+            fc.append(f"[w{i}]adelay={ms}:all=1[wd{i}]")
+            mix.append(f"[wd{i}]")
+    if len(mix) > 1:
+        fc.append("".join(mix) + f"amix=inputs={len(mix)}:duration=first:normalize=0,alimiter=limit=0.95[a]")
+    else:
+        fc.append("[0:a]anull[a]")
+    if bar:
+        fc.append(f"color=c=0xFFE14D:s={W}x9:r={FPS}[bar];"
+                  f"[0:v][bar]overlay=x='-w+W*t/{max(total, 0.1):.3f}':y=0:shortest=1,format=yuv420p[v]")
+        vmap = "[v]"
+    else:
+        vmap = "0:v"
+    _run(args + ["-filter_complex", ";".join(fc), "-map", vmap, "-map", "[a]", "-t", f"{total:.3f}",
+                 *(_ENC if bar else ["-c:v", "copy", *_ENC[_ENC.index("-c:a"):]]), "-movflags", "+faststart", str(out)],
+         timeout=1200)
 
 
 # ─────────────────────────────── 전체 만들기 ───────────────────────────────
 def build_clip(api_key: str, script: Dict, items: List[Dict], voice: str = "female_bright", tone: str = "review",
                sponsor: str = "", progress: Optional[Callable[[str, int], None]] = None,
-               min_seconds: Optional[int] = None) -> Dict:
+               min_seconds: Optional[int] = None, style: str = "shorts", bgm: str = "auto") -> Dict:
     """대본 → mp4. 반환 {path, seconds, scenes}."""
     def say(msg: str, pct: int):
         logger.info(f"🎬 {msg}")
@@ -884,6 +1067,9 @@ def build_clip(api_key: str, script: Dict, items: List[Dict], voice: str = "fema
             progress(msg, pct)
 
     script = clean_script(script, items)
+    style = style if style in STYLES else "shorts"
+    xf = XFADE_SHORTS if style == "shorts" else XFADE
+    bgm_key = BGM_AUTO.get(tone, "bright") if bgm == "auto" else bgm
     by_key = {it["key"]: it for it in items}
     ff = ffmpeg_exe(lambda m: say(m, 3))
     fonts = {"caption": font_path("Pretendard-ExtraBold.otf", lambda m: say(m, 5)),
@@ -917,29 +1103,63 @@ def build_clip(api_key: str, script: Dict, items: List[Dict], voice: str = "fema
                     say(f"나레이션 만드는 중... ({done}/{len(todo)})", 8 + int(30 * done / max(len(todo), 1)))
         # 2) 장면마다 영상 조각
         parts, durs = [], []
-        plan = [_scene_seconds(by_key[s["media"]], s["caption"], nar_secs[i]) + (XFADE if i > 0 else 0.0)
-                + (XFADE if i < len(scenes) - 1 else 0.0) for i, s in enumerate(scenes)]
-        est = sum(plan) - XFADE * (len(plan) - 1)
+        plan = [_scene_seconds(by_key[s["media"]], s["caption"], nar_secs[i], style) + (xf if i > 0 else 0.0)
+                + (xf if i < len(scenes) - 1 else 0.0) for i, s in enumerate(scenes)]
+        est = sum(plan) - xf * (len(plan) - 1)
         if min_seconds and est < min_seconds + 0.5:          # 가이드 최소 길이: 마지막 장면을 조금 더 보여 준다
             plan[-1] += min_seconds + 0.5 - est
-        for i, s in enumerate(scenes):
-            it = by_key[s["media"]]
-            lead = XFADE if i > 0 else 0.0                    # 전환되는 동안 나레이션이 겹치지 않게 살짝 늦게 시작
+        def make_part(i: int) -> Path:
+            sc = scenes[i]
+            it = by_key[sc["media"]]
+            lead = xf if i > 0 else 0.0                       # 전환되는 동안 나레이션이 겹치지 않게 살짝 늦게 시작
             dur = plan[i]
             ovl = work / f"ovl_{i:02d}.png"
-            overlay_png(script["title_lines"], s["caption"], sponsor, ovl, fonts)
             part = work / f"part_{i:02d}.mp4"
-            say(f"장면 합치는 중... ({i + 1}/{len(scenes)})", 40 + int(50 * i / len(scenes)))
-            if it["kind"] == "사진":
+            if style == "shorts" and it["kind"] == "사진":
+                cap = work / f"cap_{i:02d}.png" if sc["caption"] else None
+                overlay_png(script["title_lines"], sc["caption"], sponsor, ovl, fonts, caption_out=cap)
+                hook = None
+                if i == 0 and script.get("hook"):
+                    hook = work / "hook.png"
+                    hook_png(script["hook"], hook, fonts)
+                render_photo_scene_motion(ff, it, ovl, cap, hook, nar_files[i], dur, part, lead,
+                                          MOTIONS[i % len(MOTIONS)])
+            elif it["kind"] == "사진":
+                overlay_png(script["title_lines"], sc["caption"], sponsor, ovl, fonts)
                 render_photo_scene(ff, it, ovl, nar_files[i], dur, part, lead)
             else:
+                overlay_png(script["title_lines"], sc["caption"], sponsor, ovl, fonts)
                 render_video_scene(ff, it, ovl, nar_files[i], dur, part, lead)
-            parts.append(part)
-            durs.append(dur)
+            return part
+
+        from concurrent.futures import ThreadPoolExecutor
+        workers = max(1, min(4, (os.cpu_count() or 2) // 2))
+        done_n = 0
+        say(f"장면 합치는 중... (0/{len(scenes)})", 40)
+        with ThreadPoolExecutor(max_workers=workers) as ex:       # 장면 여러 개를 동시에 (그림 처리·인코딩이 병렬로 돈다)
+            futs = [ex.submit(make_part, i) for i in range(len(scenes))]
+            for f in futs:
+                parts.append(f.result())
+                done_n += 1
+                say(f"장면 합치는 중... ({done_n}/{len(scenes)})", 40 + int(48 * done_n / len(scenes)))
+        durs = list(plan)
         # 3) 이어 붙이기
-        say("마무리하는 중...", 93)
+        say("장면 잇는 중...", 90)
+        joined = work / "joined.mp4"
+        total, offs = _join_crossfade(ff, parts, durs, joined, style)
+        say("배경음악·마무리 넣는 중...", 95)
+        music = None
+        if bgm_key in BGMS:
+            bp = bgm_path(bgm_key, lambda m: say(m, 95))
+            if bp:
+                _, _, _, start, mean = BGMS[bgm_key]
+                target = -27.0 if voice_name else -19.0       # 나레이션이 있으면 더 작게 (말할 땐 자동으로 더 줄어듦)
+                music = (bp, start, max(-24.0, min(14.0, target - mean)))
         out = work / "clip.mp4"
-        total = _join_crossfade(ff, parts, durs, out)
+        if music or style == "shorts":
+            _finish(ff, joined, out, total, music, offs if style == "shorts" else [], style == "shorts")
+        else:
+            os.replace(joined, out)
         final = WORK_DIR / f"clip_{int(time.time())}.mp4"
         os.replace(out, final)
         say("완료", 100)
