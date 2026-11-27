@@ -1,6 +1,11 @@
 # ── 비밀값 (절대 올리지 않음) ──
 packaging/signing_key.hex
-packaging/license_server/.secrets.json
+packaging/license_server/
+packaging/license_admin.py
+packaging/runtime4_modules.txt
+license_key.txt
+license_pending.json
+license_cache*.json
 packaging/license_server/issued.json
 packaging/license_server/.wrangler/
 packaging/license_server/node_modules/
