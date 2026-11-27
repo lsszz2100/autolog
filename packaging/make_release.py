@@ -74,6 +74,30 @@ def gh_exe() -> str:
     sys.exit("[오류] GitHub CLI(gh)를 찾을 수 없습니다. winget install GitHub.cli 후 gh auth login")
 
 
+def check_runtime_modules():
+    """코드만 배포: 고객 설치본(기반 REQUIRED_RUNTIME)에 없는 파이썬 표준 모듈을 쓰면 중단.
+    (1.0.64 사례: clip_maker 의 import wave → 설치본에 없어 클립 만들기가 바로 실패)"""
+    import re
+    snap = HERE / f"runtime{REQUIRED_RUNTIME}_modules.txt"
+    if not snap.exists():
+        print(f"  ! {snap.name} 이 없어 설치본 모듈 검사를 건너뜁니다")
+        return
+    have = {l.strip() for l in snap.read_text(encoding="utf-8").splitlines() if l.strip() and not l.startswith("#")}
+    builtin = set(sys.builtin_module_names)
+    bad = []
+    for m in CODE_MODULES:
+        src = (ROOT / f"{m}.py").read_text(encoding="utf-8")
+        for name in re.findall(r"^\s*import\s+([\w.]+)", src, re.M) + re.findall(r"^\s*from\s+([\w.]+)\s+import", src, re.M):
+            top = name.split(".")[0]
+            if top in sys.stdlib_module_names and top not in builtin and name not in have and top not in have:
+                bad.append(f"{m}.py: {name}")
+            elif top in sys.stdlib_module_names and top not in builtin and "." in name and name not in have and top in have:
+                bad.append(f"{m}.py: {name}")
+    if bad:
+        sys.exit("[중단] 고객 설치본에 없는 모듈을 씁니다 (코드만 배포로는 동작 안 함):\n  " + "\n  ".join(sorted(set(bad))))
+    print("  ✔ 설치본 모듈 검사 통과")
+
+
 def main(kind: str):
     if kind == "attach-setup":
         return attach_setup()
@@ -100,6 +124,8 @@ def main(kind: str):
     if sigcheck.public_key(seed).hex() != sigcheck.PUBLIC_KEY_HEX:
         sys.exit("[오류] 서명 키가 프로그램에 들어 있는 공개 키와 맞지 않습니다.")
 
+    if kind == "code":
+        check_runtime_modules()
     print("[컴파일] 프로그램 코드를 기계어(.pyd)로 변환...")
     if subprocess.run([sys.executable, str(HERE / "compile_code.py")], stdin=subprocess.DEVNULL).returncode != 0:
         sys.exit("[중단] 코드 컴파일 실패")

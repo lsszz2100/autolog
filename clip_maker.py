@@ -23,8 +23,8 @@ import tempfile
 import threading
 import time
 import urllib.error
+import struct
 import urllib.request
-import wave
 import zipfile
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -566,17 +566,35 @@ def clean_script(data: Dict, items: List[Dict]) -> Dict:
 
 
 # ─────────────────────────────── 나레이션 (Gemini TTS) ───────────────────────────────
+# wave 모듈은 설치본(기반 1.0.14)에 들어 있지 않다 → WAV 머리말을 직접 쓰고 읽는다
+_RATE = 24000
+
+
 def _pcm_to_wav(raw: bytes, path: Path):
-    with wave.open(str(path), "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(24000)
-        w.writeframes(raw)
+    """Gemini TTS 원본(16bit·모노·24kHz PCM) → WAV 파일."""
+    n = len(raw)
+    head = struct.pack("<4sI4s4sIHHIIHH4sI", b"RIFF", 36 + n, b"WAVE", b"fmt ", 16, 1, 1,
+                       _RATE, _RATE * 2, 2, 16, b"data", n)
+    Path(path).write_bytes(head + raw)
 
 
 def wav_seconds(path: Path) -> float:
-    with wave.open(str(path), "rb") as w:
-        return w.getnframes() / float(w.getframerate() or 1)
+    """PCM WAV 길이(초). 'fmt '·'data' 덩어리를 찾아 계산."""
+    data = Path(path).read_bytes()
+    if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        raise ValueError("WAV 파일이 아닙니다")
+    i, byte_rate, size = 12, 0, None
+    while i + 8 <= len(data):
+        cid, clen = data[i:i + 4], struct.unpack("<I", data[i + 4:i + 8])[0]
+        if cid == b"fmt ":
+            byte_rate = struct.unpack("<I", data[i + 16:i + 20])[0]
+        elif cid == b"data":
+            size = min(clen, len(data) - i - 8)
+            break
+        i += 8 + clen + (clen & 1)
+    if not byte_rate or size is None:
+        raise ValueError("WAV 머리말을 읽지 못했습니다")
+    return size / float(byte_rate)
 
 
 def tts(api_key: str, text: str, voice: str, tone: str, out: Path) -> float:
