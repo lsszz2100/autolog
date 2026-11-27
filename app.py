@@ -4372,7 +4372,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       return `<span class="ph">${m && m[1] === '영상' ? '🎬' : '📷'}</span>`;
     }
     function clipKeys() {
-      return rvPhotos.map((p, i) => '사진' + (i + 1)).concat(rvVideos.map((v, i) => '영상' + (i + 1)));
+      return rvPhotos.map((p, i) => '사진' + (i + 1)).concat(clipSrcVideos().map((v, i) => '영상' + (i + 1)));
     }
     function renderClipScenes() {
       const keys = clipKeys();
@@ -4408,11 +4408,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       clipScenes.push({ media: keys[Math.min(clipScenes.length, keys.length - 1)], caption: '', narration: '' });
       renderClipScenes();
     }
+    // 클립 재료 영상: 이미 만든 클립(글에 넣으려고 목록에 들어간 것)은 다시 재료로 쓰지 않는다
+    function clipSrcVideos() { return rvVideos.filter(v => !v.fromClip); }
     function clipMediaPayload() {
       const media = rvMedia();
-      if (!media.photo_ids.length && !media.videos.length) throw new Error('사진이나 영상을 먼저 올려 주세요.');
-      if (rvPhotos.some(p => p.state === 'up') || rvVideos.some(v => v.state === 'up')) throw new Error('사진·영상을 올리는 중입니다. 다 올라간 뒤 눌러 주세요.');
-      return { photo_ids: media.photo_ids, videos: media.videos };
+      const videos = clipSrcVideos().filter(v => v.state === 'ok').map(v => ({ id: v.id, title: v.title }));
+      if (!media.photo_ids.length && !videos.length) throw new Error('사진이나 영상을 먼저 올려 주세요.');
+      return { photo_ids: media.photo_ids, videos };
     }
     async function clipScript(btn) {
       let media;
