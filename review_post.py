@@ -1309,6 +1309,8 @@ def build_blocks(lines: List[str], photos: Dict[int, str], videos: Dict[int, Dic
                 if rep_photo and item == rep_photo and not rep_done:
                     b["rep"] = rep_done = True
                 blocks.append(b)
+            elif kind == "영상" and item.get("link"):        # 클립 크리에이터에 올린 클립 → 클립 카드(링크)
+                blocks.append({"type": "oglink", "url": item["link"], "title": item.get("title", "")})
             elif kind == "영상":
                 blocks.append({"type": "video", "path": item["path"], "title": item.get("title", "")})
             else:
@@ -1338,7 +1340,7 @@ def build_blocks(lines: List[str], photos: Dict[int, str], videos: Dict[int, Dic
         blocks.append({"type": "fixed", "review": True, "lines": [""] + list(foot)})
 
     # 사진·영상·클립과 글 사이 간격
-    media = {"single_image", "video", "clip"}
+    media = {"single_image", "video", "clip", "oglink"}
     for i, b in enumerate(blocks):
         if b["type"] != "styled":
             continue

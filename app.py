@@ -779,6 +779,9 @@ def review_photo_list(photo_ids) -> list:
     return out
 
 
+CLIP_LINK_RE = re.compile(r"^https://naver\.me/\w{4,20}$")
+
+
 def review_video_map(videos) -> dict:
     """[{id, title, pos?}] → {번호: {path, title, pos?}} (올린 순서)."""
     import user_media
@@ -787,8 +790,11 @@ def review_video_map(videos) -> dict:
         if not isinstance(v, dict):
             continue
         path = user_media.video_path(str(v.get("id", "")))
-        if path:
-            item = {"path": path, "title": str(v.get("title") or "")[:40]}
+        link = str(v.get("link") or "")
+        if path or CLIP_LINK_RE.match(link):
+            item = {"path": path or "", "title": str(v.get("title") or "")[:40]}
+            if CLIP_LINK_RE.match(link):                    # 클립 크리에이터에 올린 클립 → 글에는 클립 카드로
+                item["link"] = link
             if v.get("pos") in ("top", "middle", "end"):      # 자리 고정 (처음·중간·끝) — 원고의 [영상:N] 자리 대신
                 item["pos"] = v["pos"]
             out[len(out) + 1] = item
@@ -4212,7 +4218,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       const box = document.getElementById('rv-videos');
       box.innerHTML = rvVideos.map((v, i) => `<div class="rv-item" ${rvDragAttrs('영상', i)}>`
         + `<b class="rv-num">${i + 1}</b><span class="rv-ph">🎬</span>`
-        + `<span class="rv-name">${esc(v.name)}<br><small>${v.state === 'up' ? `올리는 중 ${v.pct}%` : v.state === 'err' ? '<span style="color:#dc2626;">' + esc(v.msg) + '</span>' : '올림'}</small>`
+        + `<span class="rv-name">${esc(v.name)}<br><small>${v.state === 'up' ? `올리는 중 ${v.pct}%` : v.state === 'err' ? '<span style="color:#dc2626;">' + esc(v.msg) + '</span>' : v.link ? '🔗 올린 클립 카드로 들어감' : '올림'}</small>`
         + `<input type="text" maxlength="40" placeholder="영상 제목 (40자)" value="${esc(v.title)}" oninput="rvVideos[${i}].title=this.value">`
         + `<select title="글 안 자리" style="margin-top:3px;padding:2px 6px;font-size:11.5px;width:auto;" onchange="rvVideos[${i}].pos=this.value; renderReviewVideos();">`
         + RV_POS_OPTS.map(([k, t]) => `<option value="${k}" ${(v.pos || '') === k ? 'selected' : ''}>${t}</option>`).join('') + `</select></span>`
@@ -4300,7 +4306,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       return {
         photo_ids: rvPhotos.filter(p => p.state === 'ok').map(p => p.id),
         rep_photo_id: (rvPhotos.find(p => p.rep && p.state === 'ok') || {}).id || '',
-        videos: rvVideos.filter(v => v.state === 'ok').map(v => ({ id: v.id, title: v.title, pos: v.pos || '' })),
+        videos: rvVideos.filter(v => v.state === 'ok').map(v => ({ id: v.id, title: v.title, pos: v.pos || '', link: v.link || '' })),
         clips: rvClips.map(c => ({ id: c.id, title: c.title })),
       };
     }
@@ -4508,7 +4514,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       }
       const title = (clipLast.title || '숏폼 클립').slice(0, 40);
       if (at >= 0) {                       // 다시 만든 클립은 같은 번호 자리를 그대로 바꾼다
-        Object.assign(rvVideos[at], { id: clipLast.id, name: clipLast.name, title, pos });
+        Object.assign(rvVideos[at], { id: clipLast.id, name: clipLast.name, title, pos, link: clipLast.link || '' });
       } else {
         if (rvVideos.length >= RV_MAX_VIDEOS) { alert(`영상은 최대 ${RV_MAX_VIDEOS}개까지라 클립을 넣지 못했습니다. 영상 하나를 빼고 다시 골라 주세요.`); return clipPosSync(); }
         rvVideos.push({ key: ++rvSeq, name: clipLast.name, id: clipLast.id, title, state: 'ok', pct: 100, msg: '', pos, fromClip: true });
@@ -4564,7 +4570,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         btn.disabled = false;
         if (d.state === 'done' && d.result && d.result.uploaded) {
           const p = d.result.place;
-          st.innerHTML = `✅ 클립 등록 완료 (${d.result.public ? '전체 공개' : '나만 보기'})` + (p ? ` · 📍 ${esc(p.name)}` : (place ? ' · 장소 검색 결과가 없어 장소 없이 올렸습니다' : ''));
+          const it = rvVideos.find(v => v.fromClip && v.id === clipLast.id);
+          if (d.result.share_url) { clipLast.link = d.result.share_url; if (it) it.link = d.result.share_url; renderReviewVideos(); }
+          st.innerHTML = `✅ 클립 등록 완료 (${d.result.public ? '전체 공개' : '나만 보기'})` + (p ? ` · 📍 ${esc(p.name)}` : (place ? ' · 장소 검색 결과가 없어 장소 없이 올렸습니다' : ''))
+            + (d.result.share_url ? `<br>🔗 <a href="${esc(d.result.share_url)}" target="_blank">${esc(d.result.share_url)}</a> — 블로그 글에는 영상 파일 대신 <b>올린 클립(카드)</b>으로 들어갑니다.`
+               : (d.result.public ? '<br>⚠️ 클립 주소를 받지 못해 블로그 글에는 영상 파일로 들어갑니다.' : '<br>나만 보기 클립은 남이 볼 수 없어 블로그 글에는 영상 파일로 들어갑니다.'));
         } else {
           st.innerHTML = '<span style="color:#dc2626;">❌ ' + esc(d.error || '클립을 올리지 못했습니다.') + '</span>';
         }
@@ -6265,7 +6275,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                             ctx.close()
                 finally:
                     TASK_LOCK.release()
-                return {"uploaded": True, "url": res["url"], "public": opts["public"],
+                return {"uploaded": True, "url": res["url"], "public": opts["public"], "share_url": res.get("share_url", ""),
                         "place": res["place"], "account": cfg.get("naver_id")}
 
             if not clip_maker.start_job(job):

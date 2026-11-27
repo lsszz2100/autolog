@@ -3,6 +3,7 @@
 화면 구조는 2026-11-25에 확인했다(clipcreators.naver.com /web/upload → /web/draft/{id}).
 영상 파일을 넣는 순간 임시글이 생기므로, 실패하면 그 임시글이 남을 수 있다(결과에 draft 주소를 알려 준다).
 """
+import json
 import logging
 import re
 import time
@@ -11,6 +12,8 @@ from typing import Callable, Dict, List, Optional
 logger = logging.getLogger("naver.clip_upload")
 
 UPLOAD_URL = "https://clipcreators.naver.com/web/upload"
+CONTENTS_URL = "https://clipcreators.naver.com/web/contents/clips"
+SHORT_URL_API = "https://clipcreators.naver.com/api/viewer-short-url?profileKey={key}&videoId={vid}&isOpen=true"
 DESC_MAX = 3000
 # 1차 카테고리 (화면의 목록 그대로, 2026-11-25)
 CATEGORIES = ["플레이스", "여행", "푸드", "일상기록", "엔터", "음악", "뷰티", "패션", "프로스포츠", "아웃도어, 운동",
@@ -168,6 +171,54 @@ def upload(page, video_path: str, description: str, *, category: str = "일상�
         msg = page.locator("[role=dialog], [class*=Toast], [class*=error]").all_inner_texts()
         raise ClipUploadError("등록이 끝나지 않았습니다" + (f": {' '.join(msg)[:120]}" if msg else "")
                               + f" — 임시글({draft})을 확인해 주세요.")
-    say("등록 완료", 100)
     logger.info(f"✅ 클립 등록 완료 ({'전체 공개' if public else '나만 보기'}): {page.url}")
-    return {"url": page.url, "draft": draft, "place": chosen}
+    share = ""
+    if public:
+        say("클립 주소 받는 중...", 95)
+        share = share_url(page, description)
+    say("등록 완료", 100)
+    return {"url": page.url, "draft": draft, "place": chosen, "share_url": share}
+
+
+def share_url(page, description: str) -> str:
+    """방금 올린 클립의 공개 주소(naver.me 짧은 주소). 블로그 글에 넣으면 클립 카드로 보인다.
+    블로그 글쓰기의 [내 클립] 패널은 클립 크리에이터 웹에서 올린 클립을 보여 주지 않아서 이 주소로 넣는다.
+    못 받으면 "" (클립 등록 자체는 성공)."""
+    got: Dict[str, str] = {}
+
+    def on_resp(r):
+        if "/contents/cursor" in r.url and "type=VOD" in r.url and "body" not in got:
+            try:
+                got["body"], got["url"] = r.text(), r.url
+            except Exception:
+                pass
+    page.on("response", on_resp)
+    try:
+        page.goto(CONTENTS_URL, wait_until="domcontentloaded", timeout=30000)
+        end = time.time() + 20
+        while time.time() < end and "body" not in got:
+            page.wait_for_timeout(500)
+        m = re.search(r"/profiles/([^/]+)/contents/cursor", got.get("url", ""))
+        if not m:
+            raise ClipUploadError("내 콘텐츠 목록을 받지 못함")
+        items = json.loads(got["body"]).get("items") or []
+        head = re.sub(r"\s+", "", description)[:40]
+        mine = [it for it in items if not it.get("draft") and it.get("videoId")
+                and re.sub(r"\s+", "", it.get("description") or "").startswith(head)]
+        if not mine:
+            raise ClipUploadError("목록에서 방금 올린 클립을 찾지 못함")
+        mine.sort(key=lambda it: it.get("registerDateTime") or "", reverse=True)
+        r = page.request.get(SHORT_URL_API.format(key=m.group(1), vid=mine[0]["videoId"]), timeout=15000)
+        url = (r.json() or {}).get("url", "") if r.ok else ""
+        if not re.match(r"^https://naver\.me/\w+$", url or ""):
+            raise ClipUploadError(f"짧은 주소 응답이 이상함: {str(url)[:60]}")
+        logger.info(f"🔗 클립 주소: {url}")
+        return url
+    except Exception as e:
+        logger.warning(f"클립 주소를 받지 못했습니다 ({e}). 블로그 글에는 영상 파일로 넣습니다.")
+        return ""
+    finally:
+        try:
+            page.remove_listener("response", on_resp)
+        except Exception:
+            pass

@@ -282,6 +282,9 @@ class RichSmartEditorPublisher(SmartEditorPublisher):
                 self._attach_video(block.get("path", ""), block.get("title", ""))
             elif b_type == "clip":
                 self._insert_my_clip(str(block.get("id", "")), block.get("title", ""))
+            elif b_type == "oglink":            # 클립 크리에이터에 올린 클립 (naver.me 주소 → 클립 카드)
+                if not self._insert_link_card(str(block.get("url", ""))):
+                    logger.warning(f"⚠️ 클립 카드 삽입 실패: {block.get('url', '')}")
             elif b_type == "fixed":
                 logger.info(f"고정 문구 입력 ({len([l for l in block.get('lines', []) if l])}줄)")
                 if block.get("review"):
